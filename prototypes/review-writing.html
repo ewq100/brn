@@ -194,6 +194,22 @@
   .d-review-row { display: grid; gap: 7px; margin-bottom: 10px; border: 1px solid #dfe2dc; border-radius: 10px; padding: 13px; background: white; }
   .d-review-row.active { border-color: #7d9272; box-shadow: inset 3px 0 #6c8b5d; }
   .d-review-row p { margin: 0; color: #6c7269; font-size: 12px; }
+  .e-shell { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; background: #f7f7f5; color: #20231f; }
+  .e-main { display: grid; min-width: 0; grid-template-rows: auto 1fr; }
+  .e-main > header { display: flex; align-items: center; gap: 8px; padding: 14px 20px; border-bottom: 1px solid #dfe3dc; background: white; }
+  .e-main > header h1 { flex: 1; margin: 0; font-size: 16px; }
+  .e-review { display: grid; grid-template-columns: 330px 1fr; min-height: 0; }
+  .e-queue { overflow: auto; padding: 18px; border-right: 1px solid #dfe3dc; }
+  .e-detail { display: grid; grid-template-rows: 1fr auto; min-width: 0; background: white; }
+  .e-detail .d-paper { min-height: 0; }
+  .f-shell { position: relative; display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; background: white; color: #20231f; }
+  .f-chat { display: grid; grid-template-rows: auto 1fr auto; }
+  .f-chat > header { display: flex; align-items: center; gap: 8px; padding: 14px 18px; border-bottom: 1px solid #e0e4dd; }
+  .f-chat > header strong { flex: 1; }
+  .f-drawer { position: absolute; top: 0; right: 0; bottom: 0; display: grid; width: min(680px, 52vw); grid-template-rows: auto 1fr auto; border-left: 1px solid #ced4ca; background: #fafaf8; box-shadow: -18px 0 45px #26302020; }
+  .f-drawer > header { display: flex; align-items: center; gap: 8px; padding: 13px 16px; border-bottom: 1px solid #dfe3dc; }
+  .f-drawer > header h1 { flex: 1; margin: 0; font-size: 14px; }
+  .f-drawer > footer { display: flex; gap: 8px; padding: 11px 16px; border-top: 1px solid #dfe3dc; }
 </style>
 </head>
 <body>
@@ -213,10 +229,9 @@
 </dialog>
 <script>
 const variants = {
-  A: 'Queue + evidence',
-  B: 'Writing room',
-  C: 'Recovery workbench',
-  D: 'Chat + working pane'
+  D: 'Fixed working pane',
+  E: 'Full review workspace',
+  F: 'Overlay drawer'
 };
 const state = {
   surface: 'web',
@@ -237,7 +252,7 @@ const record = `---\nschema: 1\nid: 7e0b4d88-0e8a-4cd9-8b3b-243b6e9556a4\ntitle:
 
 function currentVariant() {
   const key = new URLSearchParams(location.search).get('variant')?.toUpperCase();
-  return variants[key] ? key : 'A';
+  return variants[key] ? key : 'D';
 }
 function setVariant(key) {
   const url = new URL(location.href);
@@ -394,23 +409,27 @@ function renderD() {
       <div class="d-composer"><textarea aria-label="Chat message" placeholder="${review ? 'Ask about the selected proposal…' : 'Ask for a revision…'}"></textarea><div><span>＋ Add context</span><span>Send ↑</span></div></div>
     </section>
     <section class="d-work"><header><h1>${review ? 'Review · Weekly research sync' : 'Writing · Weekly project report'}</h1><button class="secondary" onclick="state.surface='cli';render()">CLI</button><button class="secondary">•••</button></header>
-      ${review ? `<div class="d-paper"><article><span class="eyebrow">Exact proposal v7</span><h1>Weekly research sync</h1><p><strong>Human-vault change</strong><br>Create <span class="mono">Projects/brn/weekly-research-sync.md</span>. After commit, move the exact Inbox original to macOS Trash.</p><h2 style="font-size:16px">Placement · uncertain</h2>${placementChoices()}<h2 style="font-size:16px">Provenance</h2><p>weekly-research-sync.txt · <span class="mono">9d38…c6f2</span><br>Conversation: Research planning, “keep its exact wording”</p><h2 style="font-size:16px">Validation</h2><p>Passed validator@1. One extraction warning: added final newline.</p><button class="secondary" onclick="setTab('compare')">Compare</button> <button class="secondary" onclick="setTab('history')">Versions · 7</button></article></div><footer><button class="danger" onclick="openConfirm()">Reject</button><button class="secondary" onclick="deferProposal()">Later</button><span style="flex:1"></span><button class="secondary" onclick="setDMode('writing')">Edit in writing mode</button><button class="primary" ${!state.destination ? 'disabled' : ''} onclick="approve()">Approve exact v7</button></footer>` : `<div class="d-paper"><article><span class="eyebrow">Proposal v7 · autosaved</span><h1>BRN weekly report</h1><p>This week we settled the first version of canonical retrieval and proposal review.</p><p><mark title="Inline comment">The retrieval baseline uses deterministic passages in SQLite FTS5.</mark></p><div class="d-comment"><strong>You</strong><br>Explain why this is the baseline, not just what we chose.</div><p>Proposal review now preserves immutable versions, exact approval, and recoverable commit state. The current delivery date is unknown because no approved canonical record states one.</p><h2>Unresolved work</h2><ul><li>Choose the final web and CLI interaction.</li><li>Turn the resulting decisions into implementation issues.</li></ul><button class="secondary" onclick="addInlineComment()">Comment on selection</button></article></div><footer><span style="color:#6a7167;font-size:11px">${state.event}</span><span style="flex:1"></span><button class="secondary" onclick="addInlineComment()">Add comment</button><button class="secondary" onclick="state.event='Rewrite requested. The agent will create v8 from all open comments.';render()">Rewrite from comments</button><button class="primary" onclick="state.dMode='review';state.event='Saved v8 to Reviews. Approval is a separate user action.';render()">Send to Reviews</button></footer>`}
+      ${review ? `<div class="d-paper"><article><span class="eyebrow">Exact proposal v7</span><h1>Weekly research sync</h1><p><strong>Human-vault change</strong><br>Create <span class="mono">Projects/brn/weekly-research-sync.md</span>. After commit, move the exact Inbox original to macOS Trash.</p><h2 style="font-size:16px">Placement · uncertain</h2>${placementChoices()}<h2 style="font-size:16px">Provenance</h2><p>weekly-research-sync.txt · <span class="mono">9d38…c6f2</span><br>Conversation: Research planning, “keep its exact wording”</p><h2 style="font-size:16px">Validation</h2><p>Passed validator@1. One extraction warning: added final newline.</p><button class="secondary" onclick="setTab('compare')">Compare</button> <button class="secondary" onclick="setTab('history')">Versions · 7</button></article></div><footer><button class="danger" onclick="openConfirm()">Reject</button><button class="secondary" onclick="deferProposal()">Later</button><span style="flex:1"></span><button class="secondary" onclick="setDMode('writing')">Edit in writing mode</button><button class="primary" ${!state.destination ? 'disabled' : ''} onclick="approve()">Approve exact v7</button></footer>` : `<div class="d-paper"><article><span class="eyebrow">Proposal v7 · autosaved</span><h1>BRN weekly report</h1><p>This week we settled the first version of canonical retrieval and proposal review.</p><p><mark title="Inline comment">The retrieval baseline uses deterministic passages in SQLite FTS5.</mark></p><div class="d-comment"><strong>You</strong><br>Explain why this is the baseline, not just what we chose.</div><p>Proposal review now preserves immutable versions, exact approval, and recoverable commit state. The current delivery date is unknown because no approved canonical record states one.</p><h2>Unresolved work</h2><ul><li>Choose the final web and CLI interaction.</li><li>Turn the resulting decisions into implementation issues.</li></ul><button class="secondary" onclick="addInlineComment()">Comment on selection</button></article></div><footer><span style="color:#6a7167;font-size:11px">${state.event}</span><span style="flex:1"></span><button class="secondary" onclick="addInlineComment()">Add comment</button><button class="secondary" onclick="state.event='Rewrite requested. The agent will create v8 from all open comments.';render()">Rewrite from comments</button><button class="secondary" onclick="state.dMode='review';state.event='Saved v8 to Reviews for later.';render()">Send to Reviews</button><button class="primary" onclick="state.event='You approved and froze this exact version. Commit started.';render()">Approve & publish</button></footer>`}
     </section>
   </main>`;
 }
+function reviewDetail(light=false) {
+  return `<div class="d-paper"><article><span class="eyebrow">Exact proposal v7</span><h1>Weekly research sync</h1><p><strong>Human-vault change</strong><br>Create <span class="mono">Projects/brn/weekly-research-sync.md</span>. After commit, move the exact Inbox original to macOS Trash.</p><h2 style="font-size:16px">Placement · uncertain</h2>${placementChoices()}<h2 style="font-size:16px">Provenance</h2><p>weekly-research-sync.txt · <span class="mono">9d38…c6f2</span><br>Conversation: Research planning, “keep its exact wording”</p><h2 style="font-size:16px">Validation</h2><p>Passed validator@1. One extraction warning: added final newline.</p></article></div>`;
+}
+function lightSidebar(active='reviews') {
+  return `<aside class="d-sidebar"><span class="brand">BRN</span><button>＋ New chat</button><button class="${active === 'reviews' ? 'active' : ''}">✓ Reviews <span style="float:right">4</span></button><hr><span class="eyebrow" style="padding:8px 10px">Sessions</span><div class="sessions"><button class="${active === 'chat' ? 'active' : ''}">Weekly project report</button><button>Research planning</button><button>Vault taxonomy</button></div><div class="bottom"><button>⚙ Settings</button></div></aside>`;
+}
+function renderE() {
+  return `<main class="e-shell">${lightSidebar()}<section class="e-main"><header><h1>Reviews</h1><span class="d-pill">Inbox 3</span><span class="d-pill">Service healthy</span><button class="secondary" onclick="state.surface='cli';render()">CLI</button></header><div class="e-review"><aside class="e-queue"><span class="eyebrow">Waiting for approval</span><h2>4 proposals</h2><div class="d-review-row active"><strong>Weekly research sync</strong><p>Inbox source · valid v7 · destination required</p></div><div class="d-review-row"><strong>Launch checklist</strong><p>Writing proposal · 2 validation errors</p></div><div class="d-review-row"><strong>Knowledge taxonomy</strong><p>Conflict · no mutation started</p></div><div class="d-review-row"><strong>Customer interview</strong><p>Committed · cleanup needs attention</p></div></aside><section class="e-detail">${reviewDetail()}<footer class="d-work"><div style="display:flex;gap:8px;width:100%"><button class="danger" onclick="openConfirm()">Reject</button><button class="secondary" onclick="deferProposal()">Later</button><span style="flex:1"></span><button class="secondary">Edit</button><button class="primary" ${!state.destination ? 'disabled' : ''} onclick="approve()">Approve exact v7</button></div></footer></section></div></section></main>`;
+}
+function renderF() {
+  return `<main class="f-shell">${lightSidebar('chat')}<section class="f-chat"><header><strong>Weekly project report</strong><span class="d-pill">Inbox 3</span><span class="d-pill">Service healthy</span><button class="secondary" onclick="state.surface='cli';render()">CLI</button></header><div class="d-messages" style="padding-right:min(720px,55vw)"><div class="d-message user">Write a weekly report for project BRN using the Human vault.</div><div class="d-message agent">Draft v7 is ready. I opened it in a temporary drawer. Closing the drawer returns chat to full width without discarding the draft.</div></div><div class="d-composer" style="margin-right:min(700px,54vw)"><textarea aria-label="Chat message" placeholder="Ask for a revision…"></textarea><div><span>＋ Add context</span><span>Send ↑</span></div></div></section><aside class="f-drawer"><header><h1>Writing · Weekly project report</h1><button class="secondary" onclick="state.event='Drawer closed. Draft remains available from Reviews.';render()">Close</button></header><div class="d-paper"><article><span class="eyebrow">Proposal v7</span><h1>BRN weekly report</h1><p>This week we settled the first version of canonical retrieval and proposal review.</p><p><mark>The retrieval baseline uses deterministic passages in SQLite FTS5.</mark></p><div class="d-comment"><strong>You</strong><br>Explain why this is the baseline, not just what we chose.</div><p>The current delivery date is unknown because no approved canonical record states one.</p></article></div><footer><button class="secondary" onclick="addInlineComment()">Comment</button><button class="secondary" onclick="state.event='Rewrite requested from all comments.';render()">Rewrite</button><span style="flex:1"></span><button class="secondary">Send to Reviews</button><button class="primary">Approve & publish</button></footer></aside></main>`;
+}
 function cliForVariant(key) {
-  const style = key === 'A' ? 'queue-first' : key === 'B' ? 'document-first' : 'status-first';
-  const intro = key === 'A'
-    ? `<span class="prompt">$</span> <span class="command">brn review</span>\n\n  REVIEW QUEUE                                           4 items\n  <span style="color:var(--accent)">›</span> Weekly research sync      pending_review   source · v7\n    Launch checklist          draft            2 errors\n    Knowledge taxonomy        conflicted       approved v5\n    Customer interview        cleanup_pending  knowledge committed`
-    : key === 'B'
-    ? `<span class="prompt">$</span> <span class="command">brn proposal edit weekly-research-sync</span>\n\n  Opened v7 in <span class="command">$EDITOR</span>. Saving creates v8; v7 is never changed.\n  On exit: validator@1 passed · proposal is pending_review\n  Run <span class="command">brn proposal show weekly-research-sync --compare v7</span>`
-    : `<span class="prompt">$</span> <span class="command">brn attention</span>\n\n  READY TO APPROVE  1\n  NEEDS WRITING     1\n  RECOVERY          2\n\n  <span style="color:var(--warn)">conflicted</span>        Knowledge taxonomy\n  <span style="color:var(--blue)">cleanup_pending</span>  Customer interview`;
-  return `${topbar()}<main class="cli"><span class="dim">BRN CLI · ${style} companion to the web layout</span><div class="box">${intro}</div>
-    <span class="prompt">$</span> <span class="command">brn proposal show weekly-research-sync</span>\n\n  Weekly research sync · source · v7 · <span style="color:var(--good)">valid</span>\n  provenance  Inbox weekly-research-sync.txt · sha256 9d38…c6f2\n  context     Research planning: “keep its exact wording”\n  change      create Projects/brn/weekly-research-sync.md\n  placement   <span style="color:var(--warn)">uncertain, explicit choice required</span>\n\n  [1] Projects/brn                   recommended · cites 3 records\n  [2] Areas/knowledge-management     plausible alternative\n  [3] Resources/retrieval            plausible alternative\n  [c] custom path
-    <div class="rule"></div><span class="prompt">$</span> <span class="command">brn proposal approve weekly-research-sync --version 7 --destination Projects/brn</span>\n\n  Will create one canonical record, then move weekly-research-sync.txt to macOS Trash.\n  Approval freezes proposal v7 and its current preconditions.\n  Type <span class="command">approve</span> to confirm: <span style="color:var(--accent)">approve</span>\n  <span style="color:var(--good)">Approved v7 · manifest 8a91…20ce · commit queued</span>
-    <div class="cli-actions"><button onclick="cliEvent('compare')">show --compare</button><button onclick="cliEvent('edit')">edit in $EDITOR</button><button onclick="cliEvent('approve')">approve --version 7</button><button onclick="cliEvent('reject')">reject --confirm</button><button onclick="cliEvent('recover')">recover conflict</button></div>
-    <div class="rule"></div><span class="dim">${state.event}</span>\n\n<span class="dim">Commands always require exact proposal and version IDs. Destructive commands preview effects and require confirmation. Repeating an operation ID returns its recorded result.</span>
-  </main>`;
+  return `${topbar()}<main class="cli"><span class="dim">BRN interactive review · arrow keys move · Enter inspects · q exits</span><div class="box"><span class="prompt">$</span> <span class="command">brn review</span>\n\n  REVIEW QUEUE                                           4 items\n  <span style="color:var(--accent)">›</span> pending_review   Weekly research sync      source · v7\n    draft            Launch checklist          2 errors\n    conflicted       Knowledge taxonomy        approved v5\n    cleanup_pending  Customer interview        knowledge committed\n\n  <span class="key">↵</span> inspect   <span class="key">e</span> edit   <span class="key">d</span> diff   <span class="key">a</span> approve   <span class="key">r</span> reject   <span class="key">q</span> quit</div>
+  <div class="box">WEEKLY RESEARCH SYNC · source · v7 · <span style="color:var(--good)">valid</span>\n\n  provenance  Inbox weekly-research-sync.txt · sha256 9d38…c6f2\n  context     Research planning: “keep its exact wording”\n  change      create Projects/brn/weekly-research-sync.md\n  placement   <span style="color:var(--warn)">uncertain, choose before approval</span>\n\n  <span style="color:var(--accent)">› [1] Projects/brn</span>                  recommended · cites 3 records\n    [2] Areas/knowledge-management    plausible alternative\n    [3] Resources/retrieval           plausible alternative\n    [c] Custom valid path\n\n  Approve will freeze exact v7, create one canonical record, then move\n  the exact Inbox original to macOS Trash.</div>
+  <div class="cli-actions"><button onclick="cliEvent('compare')">d · diff</button><button onclick="cliEvent('edit')">e · $EDITOR</button><button onclick="cliEvent('approve')">a · approve</button><button onclick="cliEvent('reject')">r · reject</button><button onclick="cliEvent('recover')">x · recover</button></div>
+  <div class="rule"></div><span class="dim">${state.event}</span>\n\n<span class="dim">Noninteractive subcommands expose the same actions for scripts. Every mutation still carries exact IDs, expected versions, and an operation ID.</span></main>`;
 }
 function cliEvent(kind) {
   const events = {
@@ -425,7 +444,7 @@ function cliEvent(kind) {
 function render() {
   const key = currentVariant();
   document.getElementById('variant-label').textContent = `${key} · ${variants[key]}`;
-  document.getElementById('app').innerHTML = state.surface === 'cli' ? cliForVariant(key) : key === 'A' ? renderA() : key === 'B' ? renderB() : key === 'C' ? renderC() : renderD();
+  document.getElementById('app').innerHTML = state.surface === 'cli' ? cliForVariant(key) : key === 'D' ? renderD() : key === 'E' ? renderE() : renderF();
 }
 document.getElementById('previous').onclick = () => cycle(-1);
 document.getElementById('next').onclick = () => cycle(1);
