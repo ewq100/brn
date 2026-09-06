@@ -1,0 +1,466 @@
+<!doctype html>
+<!--
+  THROWAWAY PROTOTYPE. Do not ship.
+  Three variants of proposal review and writing across web and CLI, switchable via ?variant=A|B|C.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BRN review and writing prototype</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #10120f;
+    --panel: #181b17;
+    --panel-2: #20241e;
+    --line: #343a31;
+    --text: #edf0e9;
+    --muted: #a5ada0;
+    --accent: #b6f36a;
+    --accent-ink: #17200d;
+    --warn: #f7c66b;
+    --bad: #ff887f;
+    --good: #79d4a2;
+    --blue: #85baf5;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-width: 1040px; min-height: 100vh; background: var(--bg); color: var(--text); font-family: var(--sans); }
+  button, input, textarea { font: inherit; }
+  button { cursor: pointer; }
+  button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .muted { color: var(--muted); }
+  .mono { font-family: var(--mono); }
+  .eyebrow { color: var(--muted); font-size: 11px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
+  .badge { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); border-radius: 999px; padding: 4px 8px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .badge::before { width: 7px; height: 7px; border-radius: 99px; background: currentColor; content: ""; }
+  .badge.valid { color: var(--good); }
+  .badge.warn { color: var(--warn); }
+  .badge.bad { color: var(--bad); }
+  .badge.info { color: var(--blue); }
+  .icon-button { display: inline-grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); }
+  .primary, .secondary, .danger, .quiet { min-height: 34px; border-radius: 8px; padding: 7px 12px; font-weight: 700; }
+  .primary { border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); }
+  .secondary { border: 1px solid var(--line); background: var(--panel-2); color: var(--text); }
+  .danger { border: 1px solid #6d3833; background: #341f1d; color: #ffb2aa; }
+  .quiet { border: 0; background: transparent; color: var(--muted); }
+  .primary:disabled { cursor: not-allowed; filter: grayscale(1); opacity: .45; }
+  .topbar { height: 54px; display: flex; align-items: center; gap: 14px; padding: 0 18px; border-bottom: 1px solid var(--line); background: #141712; }
+  .brand { color: var(--accent); font: 800 14px var(--mono); letter-spacing: .08em; }
+  .topbar .spacer { flex: 1; }
+  .context-meter { width: 110px; height: 6px; overflow: hidden; border-radius: 9px; background: #30362c; }
+  .context-meter span { display: block; width: 72%; height: 100%; background: var(--warn); }
+  .segmented { display: inline-flex; padding: 3px; border: 1px solid var(--line); border-radius: 9px; background: #10120f; }
+  .segmented button { border: 0; border-radius: 6px; padding: 5px 10px; background: transparent; color: var(--muted); font-size: 12px; }
+  .segmented button.active { background: var(--panel-2); color: var(--text); }
+  .proposal-row { width: 100%; border: 0; border-bottom: 1px solid var(--line); padding: 13px 14px; text-align: left; background: transparent; color: var(--text); }
+  .proposal-row:hover, .proposal-row.active { background: #252a22; }
+  .proposal-row.active { box-shadow: inset 3px 0 var(--accent); }
+  .proposal-row h3 { margin: 6px 0 5px; font-size: 14px; }
+  .proposal-row p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
+  .row-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
+  .tabs button { border: 0; border-bottom: 2px solid transparent; padding: 11px 13px 9px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 700; }
+  .tabs button.active { border-color: var(--accent); color: var(--text); }
+  .doc { font-size: 14px; line-height: 1.62; }
+  .doc h1 { margin: 8px 0 14px; font-size: 25px; }
+  .doc h2 { margin-top: 24px; font-size: 17px; }
+  .doc p { color: #d9ded4; }
+  .frontmatter { border: 1px solid var(--line); border-radius: 8px; padding: 13px; background: #111410; color: #c8d3c2; font: 12px/1.55 var(--mono); white-space: pre-wrap; }
+  .diff-line { display: grid; grid-template-columns: 36px 1fr; font: 12px/1.55 var(--mono); }
+  .diff-line span:first-child { padding-right: 8px; color: var(--muted); text-align: right; user-select: none; }
+  .diff-line.add { background: #173426; color: #bfe9cd; }
+  .diff-line.remove { background: #40201d; color: #ffc0b9; }
+  .detail-list { display: grid; gap: 10px; margin: 0; }
+  .detail-list div { display: grid; gap: 3px; }
+  .detail-list dt { color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+  .detail-list dd { margin: 0; font-size: 13px; line-height: 1.45; }
+  .context-card { border: 1px solid var(--line); border-radius: 9px; padding: 11px; background: #151814; }
+  .context-card p { margin: 7px 0 0; color: #cdd2c9; font-size: 12px; line-height: 1.45; }
+  .choice { display: grid; grid-template-columns: auto 1fr; gap: 9px; padding: 9px; border: 1px solid var(--line); border-radius: 8px; }
+  .choice + .choice { margin-top: 7px; }
+  .choice strong { display: block; font-size: 12px; }
+  .choice small { color: var(--muted); }
+  .activity { border-top: 1px solid var(--line); padding: 9px 13px; color: var(--muted); font: 11px var(--mono); }
+  .actions { display: flex; align-items: center; gap: 8px; }
+  .actions .spacer { flex: 1; }
+  .action-help { margin: 0; color: var(--muted); font-size: 11px; }
+  .cli { min-height: calc(100vh - 54px); padding: 30px max(30px, calc((100vw - 1040px) / 2)); background: #0a0c0a; font: 13px/1.55 var(--mono); }
+  .cli .prompt { color: var(--accent); }
+  .cli .command { color: #f3f7ef; }
+  .cli .dim { color: #7e8978; }
+  .cli .rule { margin: 18px 0; border-top: 1px solid #293026; }
+  .cli .box { margin: 12px 0; border: 1px solid #394235; padding: 14px; color: #dce5d7; white-space: pre-wrap; }
+  .cli .key { display: inline-block; min-width: 24px; border: 1px solid #4a5645; border-radius: 4px; padding: 0 5px; color: #e8f0e3; text-align: center; }
+  .cli-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+  .cli-actions button { border: 1px solid #46513f; border-radius: 5px; padding: 6px 9px; background: #151a14; color: #e5ede0; font: 12px var(--mono); }
+  .switcher { position: fixed; z-index: 50; bottom: 18px; left: 50%; display: flex; align-items: center; gap: 8px; transform: translateX(-50%); border: 1px solid #6f7d68; border-radius: 999px; padding: 6px 8px; background: #050604eb; box-shadow: 0 8px 30px #0009; }
+  .switcher button { display: grid; place-items: center; width: 32px; height: 30px; border: 0; border-radius: 99px; background: #242b20; color: white; }
+  .switcher strong { min-width: 210px; text-align: center; font: 12px var(--mono); }
+  .toast { position: fixed; z-index: 60; right: 18px; bottom: 20px; max-width: 390px; border: 1px solid #617055; border-radius: 9px; padding: 12px 14px; background: #1a2117; color: #edf8e5; box-shadow: 0 10px 30px #0008; font-size: 12px; }
+  dialog { width: min(520px, 90vw); border: 1px solid var(--line); border-radius: 12px; padding: 0; background: #191d17; color: var(--text); box-shadow: 0 20px 70px #000b; }
+  dialog::backdrop { background: #0009; }
+  dialog header, dialog footer { padding: 15px 17px; }
+  dialog header { border-bottom: 1px solid var(--line); }
+  dialog footer { display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--line); }
+  dialog section { padding: 17px; color: #d9ded4; font-size: 13px; line-height: 1.55; }
+  textarea.editor { width: 100%; min-height: 430px; resize: none; border: 1px solid var(--line); border-radius: 9px; padding: 15px; background: #10130f; color: #e8eee3; font: 13px/1.6 var(--mono); }
+
+  /* Variant A: queue, document, evidence */
+  .a-layout { display: grid; grid-template-columns: 250px minmax(500px, 1fr) 310px; height: calc(100vh - 54px); }
+  .a-queue, .a-evidence { overflow: auto; background: var(--panel); }
+  .a-queue { border-right: 1px solid var(--line); }
+  .a-evidence { border-left: 1px solid var(--line); padding: 16px; }
+  .a-queue header { padding: 15px 14px 9px; }
+  .a-queue h2, .a-evidence h2 { margin: 5px 0 0; font-size: 16px; }
+  .a-main { display: grid; min-width: 0; grid-template-rows: auto 1fr auto auto; }
+  .a-main-title { display: flex; align-items: center; gap: 10px; padding: 13px 17px; }
+  .a-main-title h1 { flex: 1; margin: 0; font-size: 17px; }
+  .a-document { overflow: auto; padding: 18px 28px 90px; }
+  .a-actions { padding: 12px 16px; border-top: 1px solid var(--line); background: #171a15; }
+  .evidence-section { margin-top: 20px; }
+  .evidence-section h3 { margin: 0 0 9px; font-size: 12px; }
+
+  /* Variant B: document-first writing room */
+  .b-shell { height: calc(100vh - 54px); display: grid; grid-template-rows: auto 1fr auto; }
+  .b-breadcrumb { display: flex; align-items: center; gap: 9px; padding: 10px 20px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+  .b-workspace { display: grid; grid-template-columns: 1fr 340px; min-height: 0; }
+  .b-canvas { overflow: auto; padding: 26px max(34px, calc((100% - 760px)/2)); }
+  .b-side { overflow: auto; border-left: 1px solid var(--line); background: var(--panel); }
+  .b-side section { padding: 15px; border-bottom: 1px solid var(--line); }
+  .b-side h2 { margin: 3px 0 11px; font-size: 14px; }
+  .b-stage { display: flex; align-items: center; gap: 5px; }
+  .b-stage span { padding: 5px 8px; border-radius: 99px; color: var(--muted); font-size: 11px; }
+  .b-stage span.active { background: #314422; color: var(--accent); }
+  .b-bottom { display: flex; align-items: center; gap: 9px; padding: 10px 20px; border-top: 1px solid var(--line); background: #151814; }
+  .conversation { border-left: 2px solid var(--blue); padding-left: 10px; color: #cad8e8; font-size: 12px; line-height: 1.5; }
+
+  /* Variant C: workbench timeline */
+  .c-layout { display: grid; grid-template-columns: 205px 1fr; height: calc(100vh - 54px); }
+  .c-nav { border-right: 1px solid var(--line); padding: 15px 11px; background: #131612; }
+  .c-nav button { width: 100%; border: 0; border-radius: 7px; padding: 9px 10px; text-align: left; background: transparent; color: var(--muted); }
+  .c-nav button.active { background: #293023; color: var(--text); }
+  .c-main { overflow: auto; padding: 24px 32px 90px; }
+  .c-header { display: flex; align-items: end; gap: 16px; max-width: 1100px; margin: 0 auto 20px; }
+  .c-header h1 { margin: 5px 0 0; font-size: 23px; }
+  .c-header .spacer { flex: 1; }
+  .c-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; max-width: 1100px; margin: 0 auto; }
+  .c-card { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+  .c-card header { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .c-card header h2 { flex: 1; margin: 0; font-size: 14px; }
+  .c-card .body { padding: 14px; }
+  .c-card.wide { grid-column: 1 / -1; }
+  .timeline { display: grid; grid-template-columns: 22px 1fr; gap: 0 9px; }
+  .timeline .dot { position: relative; width: 10px; height: 10px; margin: 4px auto 0; border-radius: 99px; background: var(--accent); }
+  .timeline .dot::after { position: absolute; top: 11px; left: 4px; width: 1px; height: 42px; background: var(--line); content: ""; }
+  .timeline .dot.last::after { display: none; }
+  .timeline p { min-height: 43px; margin: 0; font-size: 12px; line-height: 1.4; }
+
+  /* Variant D: chat stays put while the right pane becomes the work */
+  .d-shell { display: grid; grid-template-columns: 220px minmax(390px, 42%) 1fr; height: 100vh; background: #f7f7f5; color: #20231f; }
+  .d-sidebar { display: flex; flex-direction: column; border-right: 1px solid #d9ddd6; padding: 14px 10px; background: #eceeea; }
+  .d-sidebar .brand { padding: 4px 9px 16px; color: #35412f; }
+  .d-sidebar button { border: 0; border-radius: 7px; padding: 8px 10px; text-align: left; background: transparent; color: #60675d; }
+  .d-sidebar button.active, .d-sidebar button:hover { background: #dde2da; color: #1e241d; }
+  .d-sidebar hr { width: 100%; border: 0; border-top: 1px solid #d5d9d2; }
+  .d-sidebar .sessions { display: grid; gap: 2px; margin-top: 5px; }
+  .d-sidebar .bottom { margin-top: auto; }
+  .d-chat { display: grid; grid-template-rows: auto 1fr auto; min-width: 0; border-right: 1px solid #d9ddd6; background: white; }
+  .d-chat header { display: flex; align-items: center; gap: 7px; padding: 12px 14px; border-bottom: 1px solid #e4e7e1; }
+  .d-chat header strong { flex: 1; }
+  .d-pill { border: 1px solid #d5dbd1; border-radius: 999px; padding: 4px 8px; background: #f6f8f4; color: #667161; font-size: 10px; }
+  .d-messages { overflow: auto; padding: 22px; }
+  .d-message { max-width: 88%; margin: 0 0 20px; font-size: 13px; line-height: 1.55; }
+  .d-message.user { margin-left: auto; border-radius: 12px 12px 3px 12px; padding: 10px 12px; background: #eef0ec; }
+  .d-message.agent { color: #343a31; }
+  .d-composer { margin: 12px; border: 1px solid #d8dcd5; border-radius: 13px; padding: 9px; box-shadow: 0 2px 12px #1e2b1810; }
+  .d-composer textarea { width: 100%; height: 48px; resize: none; border: 0; outline: 0; background: transparent; color: #242824; }
+  .d-composer div { display: flex; justify-content: space-between; color: #747b70; font-size: 11px; }
+  .d-work { display: grid; min-width: 0; grid-template-rows: auto 1fr auto; background: #fafaf8; }
+  .d-work header { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid #e1e4de; }
+  .d-work header h1 { flex: 1; margin: 0; font-size: 14px; }
+  .d-paper { overflow: auto; padding: 35px max(35px, calc((100% - 720px)/2)); }
+  .d-paper article { max-width: 720px; margin: auto; font-size: 14px; line-height: 1.68; }
+  .d-paper article h1 { margin-top: 0; font-size: 27px; }
+  .d-paper mark { border-bottom: 2px solid #9a76d4; background: #ede3fb; cursor: pointer; }
+  .d-comment { margin: 13px 0; border-left: 3px solid #9a76d4; padding: 9px 11px; background: #f2ecfa; color: #5f477d; font-size: 12px; }
+  .d-work footer { display: flex; align-items: center; gap: 8px; padding: 11px 16px; border-top: 1px solid #e1e4de; }
+  .d-work button, .d-chat button { border-radius: 7px; padding: 7px 10px; font-weight: 650; }
+  .d-work .primary, .d-chat .primary { border-color: #20251f; background: #20251f; color: white; }
+  .d-work .secondary, .d-chat .secondary { border-color: #d5dad1; background: white; color: #30362e; }
+  .d-reviews { overflow: auto; padding: 24px; }
+  .d-review-row { display: grid; gap: 7px; margin-bottom: 10px; border: 1px solid #dfe2dc; border-radius: 10px; padding: 13px; background: white; }
+  .d-review-row.active { border-color: #7d9272; box-shadow: inset 3px 0 #6c8b5d; }
+  .d-review-row p { margin: 0; color: #6c7269; font-size: 12px; }
+  .e-shell { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; background: #f7f7f5; color: #20231f; }
+  .e-main { display: grid; min-width: 0; grid-template-rows: auto 1fr; }
+  .e-main > header { display: flex; align-items: center; gap: 8px; padding: 14px 20px; border-bottom: 1px solid #dfe3dc; background: white; }
+  .e-main > header h1 { flex: 1; margin: 0; font-size: 16px; }
+  .e-review { display: grid; grid-template-columns: 330px 1fr; min-height: 0; }
+  .e-queue { overflow: auto; padding: 18px; border-right: 1px solid #dfe3dc; }
+  .e-detail { display: grid; grid-template-rows: 1fr auto; min-width: 0; background: white; }
+  .e-detail .d-paper { min-height: 0; }
+  .f-shell { position: relative; display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; background: white; color: #20231f; }
+  .f-chat { display: grid; grid-template-rows: auto 1fr auto; }
+  .f-chat > header { display: flex; align-items: center; gap: 8px; padding: 14px 18px; border-bottom: 1px solid #e0e4dd; }
+  .f-chat > header strong { flex: 1; }
+  .f-drawer { position: absolute; top: 0; right: 0; bottom: 0; display: grid; width: min(680px, 52vw); grid-template-rows: auto 1fr auto; border-left: 1px solid #ced4ca; background: #fafaf8; box-shadow: -18px 0 45px #26302020; }
+  .f-drawer > header { display: flex; align-items: center; gap: 8px; padding: 13px 16px; border-bottom: 1px solid #dfe3dc; }
+  .f-drawer > header h1 { flex: 1; margin: 0; font-size: 14px; }
+  .f-drawer > footer { display: flex; gap: 8px; padding: 11px 16px; border-top: 1px solid #dfe3dc; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="switcher" aria-label="Prototype variant switcher">
+  <button id="previous" aria-label="Previous variant">←</button>
+  <strong id="variant-label"></strong>
+  <button id="next" aria-label="Next variant">→</button>
+</div>
+<dialog id="confirm-dialog">
+  <header><strong>Reject this proposal?</strong></header>
+  <section>
+    <p>This removes the proposal content and history from normal view. BRN keeps only a tombstone. The Inbox file stays where it is and the same path plus file hash will not be proposed again automatically.</p>
+    <label><input id="confirm-check" type="checkbox"> I understand this discards the proposal.</label>
+  </section>
+  <footer><button class="secondary" onclick="closeConfirm()">Cancel</button><button class="danger" id="confirm-reject" disabled onclick="finishReject()">Reject proposal</button></footer>
+</dialog>
+<script>
+const variants = {
+  D: 'Fixed working pane',
+  E: 'Full review workspace',
+  F: 'Overlay drawer'
+};
+const state = {
+  surface: 'web',
+  dMode: 'writing',
+  drawerOpen: true,
+  commentResolved: false,
+  tab: 'record',
+  selected: 'meeting',
+  edited: false,
+  destination: '',
+  event: 'Ready. No changes made.',
+  proposals: [
+    {id:'meeting', title:'Weekly research sync', state:'pending_review', badge:'valid', detail:'Source record · v7 · 8 min ago'},
+    {id:'launch', title:'Launch checklist', state:'draft · 2 errors', badge:'bad', detail:'Note · v3 · needs attention'},
+    {id:'taxonomy', title:'Knowledge taxonomy', state:'conflicted', badge:'warn', detail:'Replace · approved v5'},
+    {id:'interview', title:'Customer interview', state:'cleanup_pending', badge:'info', detail:'Committed · Inbox cleanup'}
+  ]
+};
+const record = `---\nschema: 1\nid: 7e0b4d88-0e8a-4cd9-8b3b-243b6e9556a4\ntitle: Weekly research sync\ntype: source\nlocation: Projects/brn\nprovenance:\n  kind: inbox\n  filename: weekly-research-sync.txt\n  sha256: 9d38…c6f2\n  ingested_at: 2026-09-06T09:12:40Z\n  extractor: plain-text@1\n  warnings:\n    - Added final newline.\ntags:\n  - brn\n  - research\nrelated:\n  - "[[retrieval-evaluation]]"\n---\n\n# Weekly research sync\n\nThe retrieval baseline should favor deterministic passages and expose the evidence used for placement.\n\n## Decisions\n\n- Begin with SQLite FTS5.\n- Keep archived records outside normal retrieval.\n- Review placement tuning after 25 approvals or 5 corrections.\n`;
+
+function currentVariant() {
+  const key = new URLSearchParams(location.search).get('variant')?.toUpperCase();
+  return variants[key] ? key : 'D';
+}
+function setVariant(key) {
+  const url = new URL(location.href);
+  url.searchParams.set('variant', key);
+  history.replaceState(null, '', url);
+  render();
+}
+function cycle(step) {
+  const keys = Object.keys(variants);
+  const index = keys.indexOf(currentVariant());
+  setVariant(keys[(index + step + keys.length) % keys.length]);
+}
+function statusBadge(item) {
+  return `<span class="badge ${item.badge}">${item.state}</span>`;
+}
+function queueRows() {
+  return state.proposals.map(item => `<button class="proposal-row ${state.selected === item.id ? 'active' : ''}" onclick="selectProposal('${item.id}')">
+    <div class="row-top"><span class="eyebrow">${item.id === 'meeting' ? 'Review' : item.id === 'launch' ? 'Writing' : 'Recovery'}</span>${statusBadge(item)}</div>
+    <h3>${item.title}</h3><p>${item.detail}</p>
+  </button>`).join('');
+}
+function selectProposal(id) {
+  state.selected = id;
+  state.event = `Opened ${state.proposals.find(p => p.id === id).title}.`;
+  render();
+}
+function surfaceToggle() {
+  return `<div class="segmented" aria-label="Interface preview"><button class="${state.surface === 'web' ? 'active' : ''}" onclick="setSurface('web')">Web</button><button class="${state.surface === 'cli' ? 'active' : ''}" onclick="setSurface('cli')">CLI</button></div>`;
+}
+function setSurface(surface) { state.surface = surface; render(); }
+function topbar(extra='') {
+  return `<header class="topbar"><span class="brand">BRN</span><span class="muted">Knowledge vault</span>${extra}<span class="spacer"></span><span class="muted" style="font-size:11px">Context 72%</span><span class="context-meter"><span></span></span>${surfaceToggle()}</header>`;
+}
+function tabButton(id, label) { return `<button class="${state.tab === id ? 'active' : ''}" onclick="setTab('${id}')">${label}</button>`; }
+function setTab(tab) { state.tab = tab; render(); }
+function documentContent() {
+  if (state.tab === 'compare') return `<div class="frontmatter" aria-label="Difference from canonical record">
+    <div class="diff-line remove"><span>-</span><span>location: Resources/retrieval</span></div>
+    <div class="diff-line add"><span>+</span><span>location: Projects/brn</span></div>
+    <div class="diff-line"><span> </span><span>tags:</span></div>
+    <div class="diff-line"><span> </span><span>  - brn</span></div>
+    <div class="diff-line add"><span>+</span><span>  - research</span></div>
+    <div class="diff-line"><span> </span><span>---</span></div>
+    <div class="diff-line add"><span>+</span><span>- Review placement tuning after 25 approvals or 5 corrections.</span></div>
+  </div><p class="muted">Compared with <span class="mono">retrieval-evaluation.md · approved hash 63af…28b1</span></p>`;
+  if (state.tab === 'history') return `<div class="detail-list">
+    <div><dt>v7 · current</dt><dd>Agent revision · metadata and two body lines · valid</dd></div>
+    <div><dt>v6</dt><dd>Deterministic normalization · YAML key order and final newline <button class="quiet" onclick="restoreVersion(6)">Restore as new version</button></dd></div>
+    <div><dt>v5</dt><dd>You changed title and destination <button class="quiet" onclick="restoreVersion(5)">Restore as new version</button></dd></div>
+    <div><dt>v1</dt><dd>Created from Inbox extraction · immutable source body</dd></div>
+  </div>`;
+  if (state.tab === 'comments') return `<div class="context-card"><strong>You · on v5</strong><p>Keep the original wording here. It matters that this was a decision from the call, not a general recommendation.</p></div><div class="context-card" style="margin-top:9px"><strong>Agent · resolved in v7</strong><p>Restored the source wording and moved my summary into the proposal rationale.</p></div>`;
+  if (state.tab === 'edit') return `<textarea class="editor" aria-label="Proposal Markdown editor" oninput="markEdited()">${record}</textarea>`;
+  return `<div class="doc"><div class="frontmatter">${escapeHtml(record.split('\n---\n')[0] + '\n---')}</div><h1>Weekly research sync</h1><p>The retrieval baseline should favor deterministic passages and expose the evidence used for placement.</p><h2>Decisions</h2><ul><li>Begin with SQLite FTS5.</li><li>Keep archived records outside normal retrieval.</li><li>Review placement tuning after 25 approvals or 5 corrections.</li></ul></div>`;
+}
+function escapeHtml(text) { const e = document.createElement('div'); e.textContent = text; return e.innerHTML; }
+function placementChoices() {
+  const choices = [
+    ['Projects/brn', 'Recommended · cites 3 records'],
+    ['Areas/knowledge-management', 'Plausible alternative'],
+    ['Resources/retrieval', 'Plausible alternative']
+  ];
+  return choices.map(([path, why]) => `<label class="choice"><input type="radio" name="destination" ${state.destination === path ? 'checked' : ''} onchange="chooseDestination('${path}')"><span><strong>${path}</strong><small>${why}</small></span></label>`).join('');
+}
+function chooseDestination(path) { state.destination = path; state.event = `Selected ${path}. Approval is now available.`; render(); }
+function markEdited() { state.edited = true; state.event = 'Unsaved edits. Approval still targets v7.'; document.querySelectorAll('.primary').forEach(b => b.disabled = true); }
+function saveVersion() { state.edited = false; state.event = 'Saved immutable v8. Deterministic validation passed.'; state.tab = 'record'; render(); }
+function restoreVersion(version) { state.event = `Copied v${version} into new head v8. Original history is unchanged.`; state.tab = 'record'; render(); }
+function approve() {
+  state.event = 'Approved and froze v7 · manifest 8a91…20ce. Commit queued.';
+  const p = state.proposals[0]; p.state = 'approved'; p.badge = 'info'; p.detail = 'Frozen v7 · commit queued'; render();
+}
+function deferProposal() { state.event = 'Deferred. Proposal stays pending_review; no new state or version was created.'; render(); }
+function openConfirm() { document.getElementById('confirm-dialog').showModal(); }
+function closeConfirm() { document.getElementById('confirm-dialog').close(); }
+function finishReject() {
+  closeConfirm();
+  state.event = 'Rejected. Inbox source kept; path and hash suppressed from automatic reproposal.';
+  state.proposals[0].state = 'rejected'; state.proposals[0].badge = 'bad'; render();
+}
+function repairConflict() { state.event = 'Recovery started. Choose approved, current, or merged bytes to create a new draft version.'; state.selected = 'taxonomy'; render(); }
+function retryCleanup() { state.event = 'Retrying only the macOS Trash cleanup step. Canonical record remains committed.'; state.selected = 'interview'; render(); }
+function actions(compact=false) {
+  return `<div class="actions">
+    <button class="quiet" onclick="deferProposal()">${compact ? 'Later' : 'Save for later'}</button>
+    <button class="danger" onclick="openConfirm()">Reject</button>
+    <span class="spacer"></span>
+    ${state.tab === 'edit' ? `<button class="primary" onclick="saveVersion()">Save as v8</button>` : `<button class="secondary" onclick="setTab('edit')">Edit</button><button class="primary" ${!state.destination || state.edited ? 'disabled' : ''} onclick="approve()">Approve exact v7</button>`}
+  </div>`;
+}
+function evidence() {
+  return `<span class="eyebrow">Why this exists</span><h2>Evidence</h2>
+  <section class="evidence-section"><h3>Provenance</h3><dl class="detail-list"><div><dt>Inbox original</dt><dd>weekly-research-sync.txt</dd></div><div><dt>Exact bytes</dt><dd class="mono">9d38…c6f2</dd></div><div><dt>Extraction</dt><dd>plain-text@1<br><span class="muted">Added final newline</span></dd></div></dl></section>
+  <section class="evidence-section"><h3>Placement · uncertain</h3>${placementChoices()}</section>
+  <section class="evidence-section"><h3>Conversation context</h3><div class="context-card"><span class="badge info">Session</span><p>“Turn the weekly research sync into a source record and keep its exact wording.”</p><small class="muted">Research planning · 8 min ago</small></div></section>
+  <section class="evidence-section"><h3>Validation</h3><span class="badge valid">0 errors · validator@1</span></section>`;
+}
+function selectedRecovery() {
+  if (state.selected === 'launch') return `<div class="context-card"><span class="badge bad">2 validation errors</span><p><strong>location</strong> is missing. <strong>related[0]</strong> targets an unknown record. Edit the proposal or ask the agent to revise it. Approval remains unavailable.</p></div>`;
+  if (state.selected === 'taxonomy') return `<div class="context-card"><span class="badge warn">Canonical bytes changed</span><p>The approved precondition no longer matches <span class="mono">knowledge-taxonomy.md</span>. Nothing was written. Compare the approved and current bytes, then create and approve a new proposal version.</p><p><button class="secondary" onclick="repairConflict()">Compare recovery choices</button></p></div>`;
+  if (state.selected === 'interview') return `<div class="context-card"><span class="badge info">Knowledge committed</span><p>The canonical record is safe. Moving <span class="mono">customer-interview.txt</span> to macOS Trash failed. Retry only cleanup or keep the Inbox file.</p><p><button class="secondary" onclick="retryCleanup()">Retry cleanup</button> <button class="quiet" onclick="deferProposal()">Keep file</button></p></div>`;
+  return '';
+}
+function renderA() {
+  return `${topbar()}<main class="a-layout">
+    <aside class="a-queue"><header><span class="eyebrow">Inbox and proposals</span><h2>Review queue · 4</h2></header>${queueRows()}</aside>
+    <section class="a-main"><div class="a-main-title"><div><span class="eyebrow">Source proposal · v7</span><h1>Weekly research sync</h1></div>${statusBadge(state.proposals[0])}</div>
+      <nav class="tabs">${tabButton('record','Record')}${tabButton('compare','Compare')}${tabButton('history','History · 7')}${tabButton('comments','Comments · 2')}</nav>
+      <div class="a-document">${selectedRecovery() || documentContent()}</div>
+      <footer class="a-actions">${actions()}<p class="action-help">Approve freezes the displayed version and its Human-vault preconditions.</p></footer><div class="activity">${state.event}</div>
+    </section>
+    <aside class="a-evidence">${evidence()}</aside>
+  </main>`;
+}
+function renderB() {
+  return `${topbar('<span class="badge warn">4 need attention</span>')}<main class="b-shell">
+    <div class="b-breadcrumb"><span>Review</span><span>›</span><strong style="color:var(--text)">Weekly research sync</strong><span>›</span><span>v7</span><span class="spacer"></span><button class="quiet" onclick="selectProposal('launch')">Next item</button></div>
+    <div class="b-workspace"><section class="b-canvas">
+      <div class="b-stage"><span>1 Source</span><span class="active">2 Write</span><span>3 Validate</span><span>4 Approve</span></div>
+      <div style="display:flex;align-items:center;gap:10px;margin:15px 0"><h1 style="flex:1;margin:0;font-size:24px">Weekly research sync</h1>${statusBadge(state.proposals[0])}</div>
+      <nav class="tabs">${tabButton('edit','Writing')}${tabButton('compare','Changes')}${tabButton('history','Versions')}${tabButton('record','Preview')}</nav>
+      <div style="padding-top:16px">${selectedRecovery() || (state.tab === 'edit' ? documentContent() : documentContent())}</div>
+    </section><aside class="b-side">
+      <section><span class="eyebrow">Review checklist</span><h2>2 decisions before approval</h2><span class="badge valid">Content valid</span> <span class="badge valid">Provenance intact</span></section>
+      <section><h2>Choose destination</h2><p class="muted" style="font-size:12px">The recommendation is uncertain, so nothing is selected for you.</p>${placementChoices()}</section>
+      <section><h2>Ask the agent</h2><div class="conversation">“Turn the weekly research sync into a source record and keep its exact wording.”</div><textarea aria-label="Message agent" placeholder="Ask for a revision…" style="width:100%;height:72px;margin-top:10px;border:1px solid var(--line);border-radius:8px;padding:9px;background:#10130f;color:var(--text)"></textarea><button class="secondary" style="margin-top:7px">Send revision request</button></section>
+      <section><h2>Source facts</h2><dl class="detail-list"><div><dt>Original</dt><dd>weekly-research-sync.txt</dd></div><div><dt>Hash</dt><dd class="mono">9d38…c6f2</dd></div><div><dt>Warning</dt><dd>Added final newline</dd></div></dl></section>
+    </aside></div>
+    <footer class="b-bottom"><span class="mono muted" style="font-size:11px">${state.event}</span><span class="spacer"></span>${actions(true)}</footer>
+  </main>`;
+}
+function renderC() {
+  return `${topbar()}<main class="c-layout"><nav class="c-nav"><span class="eyebrow" style="padding:0 10px">Workbench</span><button class="active">Attention · 4</button><button>Ready to approve · 1</button><button>Needs writing · 1</button><button>Recovery · 2</button><button>Committed</button><hr style="border:0;border-top:1px solid var(--line);margin:12px 0"><button>Inbox sources · 3</button><button>Sessions</button><button>Human vault</button></nav>
+    <section class="c-main"><header class="c-header"><div><span class="eyebrow">Review workbench</span><h1>Weekly research sync</h1></div><span class="spacer"></span>${statusBadge(state.proposals[0])}</header>
+      <div class="c-grid">
+        <article class="c-card"><header><h2>1 · Origin</h2><span class="badge valid">verified</span></header><div class="body"><dl class="detail-list"><div><dt>Inbox</dt><dd>weekly-research-sync.txt · <span class="mono">9d38…c6f2</span></dd></div><div><dt>Conversation</dt><dd>Research planning · “keep its exact wording”</dd></div><div><dt>Extraction</dt><dd>plain-text@1 · added final newline</dd></div></dl></div></article>
+        <article class="c-card"><header><h2>2 · Validation</h2><span class="badge valid">passed</span></header><div class="body"><div class="timeline"><span class="dot"></span><p><strong>v6 normalized</strong><br><span class="muted">YAML order and final newline</span></p><span class="dot last"></span><p><strong>v7 valid</strong><br><span class="muted">validator@1 · exact hash 401c…7aa2</span></p></div><button class="secondary" onclick="setTab('history')">Inspect all versions</button></div></article>
+        <article class="c-card"><header><h2>3 · Human-vault change</h2><button class="quiet" onclick="setTab('compare')">Full diff</button></header><div class="body"><div class="frontmatter"><span style="color:var(--good)">+ Projects/brn/weekly-research-sync.md</span>\n  create one source record\n  no existing record overwritten\n  after commit: Trash Inbox original</div></div></article>
+        <article class="c-card"><header><h2>4 · Placement choice</h2><span class="badge warn">required</span></header><div class="body">${placementChoices()}</div></article>
+        <article class="c-card wide"><header><h2>Exact approval</h2><span class="mono muted" style="font-size:11px">proposal v7 · expected source 9d38…c6f2 · operation assigned on approval</span></header><div class="body">${actions()}<p class="action-help">Later leaves the item in review. Reject keeps the Inbox original. Approve freezes v7; any later edit becomes a new version and needs new approval.</p></div></article>
+        <article class="c-card"><header><h2>Recovery inbox</h2><span class="badge warn">2</span></header><div class="body"><p><strong>Knowledge taxonomy</strong><br><span class="muted">Conflict before mutation. Compare current and approved bytes.</span></p><button class="secondary" onclick="selectProposal('taxonomy')">Open conflict</button></div></article>
+        <article class="c-card"><header><h2>Cleanup</h2><span class="badge info">committed</span></header><div class="body"><p><strong>Customer interview</strong><br><span class="muted">Canonical write succeeded. Inbox Trash step needs attention.</span></p><button class="secondary" onclick="retryCleanup()">Retry cleanup</button></div></article>
+      </div><div class="activity" style="max-width:1100px;margin:15px auto 0;border:1px solid var(--line)">${state.event}</div>
+    </section></main>`;
+}
+function setDMode(mode) { state.dMode = mode; render(); }
+function addInlineComment() { state.event = 'Comment added to v7. Rewrite will create a new immutable proposal version.'; render(); }
+function renderD() {
+  const review = state.dMode === 'review';
+  return `<main class="d-shell">
+    <aside class="d-sidebar"><span class="brand">BRN</span><button onclick="setDMode('writing')">＋ New chat</button><button class="${review ? 'active' : ''}" onclick="setDMode('review')">✓ Reviews <span style="float:right">4</span></button><hr><span class="eyebrow" style="padding:8px 10px">Sessions</span><div class="sessions"><button class="${!review ? 'active' : ''}" onclick="setDMode('writing')">Weekly project report</button><button>Research planning</button><button>Vault taxonomy</button></div><div class="bottom"><button>⚙ Settings</button></div></aside>
+    <section class="d-chat"><header><strong>${review ? 'Reviews' : 'Weekly project report'}</strong><span class="d-pill">Inbox 3</span><span class="d-pill">Service healthy</span><span class="d-pill">Context 72%</span></header>
+      ${review ? `<div class="d-reviews"><span class="eyebrow">Waiting for approval</span><h1 style="font-size:22px">4 proposals</h1><div class="d-review-row active"><strong>Weekly research sync</strong><p>Inbox source · valid v7 · destination required</p></div><div class="d-review-row"><strong>Launch checklist</strong><p>Writing proposal · 2 validation errors</p></div><div class="d-review-row"><strong>Knowledge taxonomy</strong><p>Approved v5 · canonical bytes changed</p></div><div class="d-review-row"><strong>Customer interview</strong><p>Committed · Inbox cleanup needs attention</p></div></div>` : `<div class="d-messages"><div class="d-message user">Write a weekly report for project BRN using the Human vault. Ask if anything important is missing.</div><div class="d-message agent"><strong>Before I draft it:</strong><br>Should the report cover only decisions made this week, or also unresolved work? I found evidence for retrieval and proposal review, but no current delivery date.</div><div class="d-message user">Include unresolved work. Leave out a delivery date and say why.</div><div class="d-message agent">Draft v7 is open on the right. I used five canonical records and marked the missing delivery date instead of inventing one. Add comments in the document or tell me here what to change.</div></div>`}
+      <div class="d-composer"><textarea aria-label="Chat message" placeholder="${review ? 'Ask about the selected proposal…' : 'Ask for a revision…'}"></textarea><div><span>＋ Add context</span><span>Send ↑</span></div></div>
+    </section>
+    <section class="d-work"><header><h1>${review ? 'Review · Weekly research sync' : 'Writing · Weekly project report'}</h1><button class="secondary" onclick="state.surface='cli';render()">CLI</button><button class="secondary">•••</button></header>
+      ${review ? `<div class="d-paper"><article><span class="eyebrow">Exact proposal v7</span><h1>Weekly research sync</h1><p><strong>Human-vault change</strong><br>Create <span class="mono">Projects/brn/weekly-research-sync.md</span>. After commit, move the exact Inbox original to macOS Trash.</p><h2 style="font-size:16px">Placement · uncertain</h2>${placementChoices()}<h2 style="font-size:16px">Provenance</h2><p>weekly-research-sync.txt · <span class="mono">9d38…c6f2</span><br>Conversation: Research planning, “keep its exact wording”</p><h2 style="font-size:16px">Validation</h2><p>Passed validator@1. One extraction warning: added final newline.</p><button class="secondary" onclick="setTab('compare')">Compare</button> <button class="secondary" onclick="setTab('history')">Versions · 7</button></article></div><footer><button class="danger" onclick="openConfirm()">Reject</button><button class="secondary" onclick="deferProposal()">Later</button><span style="flex:1"></span><button class="secondary" onclick="setDMode('writing')">Edit in writing mode</button><button class="primary" ${!state.destination ? 'disabled' : ''} onclick="approve()">Approve exact v7</button></footer>` : `<div class="d-paper"><article><span class="eyebrow">Proposal v7 · autosaved</span><h1>BRN weekly report</h1><p>This week we settled the first version of canonical retrieval and proposal review.</p><p><mark title="Inline comment">The retrieval baseline uses deterministic passages in SQLite FTS5.</mark></p><div class="d-comment"><strong>You</strong><br>Explain why this is the baseline, not just what we chose.</div><p>Proposal review now preserves immutable versions, exact approval, and recoverable commit state. The current delivery date is unknown because no approved canonical record states one.</p><h2>Unresolved work</h2><ul><li>Choose the final web and CLI interaction.</li><li>Turn the resulting decisions into implementation issues.</li></ul><button class="secondary" onclick="addInlineComment()">Comment on selection</button></article></div><footer><span style="color:#6a7167;font-size:11px">${state.event}</span><span style="flex:1"></span><button class="secondary" onclick="addInlineComment()">Add comment</button><button class="secondary" onclick="state.event='Rewrite requested. The agent will create v8 from all open comments.';render()">Rewrite from comments</button><button class="secondary" onclick="state.dMode='review';state.event='Saved v8 to Reviews for later.';render()">Send to Reviews</button><button class="primary" onclick="state.event='You approved and froze this exact version. Commit started.';render()">Approve & publish</button></footer>`}
+    </section>
+  </main>`;
+}
+function reviewDetail(light=false) {
+  return `<div class="d-paper"><article><span class="eyebrow">Exact proposal v7</span><h1>Weekly research sync</h1><p><strong>Human-vault change</strong><br>Create <span class="mono">Projects/brn/weekly-research-sync.md</span>. After commit, move the exact Inbox original to macOS Trash.</p><h2 style="font-size:16px">Placement · uncertain</h2>${placementChoices()}<h2 style="font-size:16px">Provenance</h2><p>weekly-research-sync.txt · <span class="mono">9d38…c6f2</span><br>Conversation: Research planning, “keep its exact wording”</p><h2 style="font-size:16px">Validation</h2><p>Passed validator@1. One extraction warning: added final newline.</p></article></div>`;
+}
+function lightSidebar(active='reviews') {
+  return `<aside class="d-sidebar"><span class="brand">BRN</span><button>＋ New chat</button><button class="${active === 'reviews' ? 'active' : ''}">✓ Reviews <span style="float:right">4</span></button><hr><span class="eyebrow" style="padding:8px 10px">Sessions</span><div class="sessions"><button class="${active === 'chat' ? 'active' : ''}">Weekly project report</button><button>Research planning</button><button>Vault taxonomy</button></div><div class="bottom"><button>⚙ Settings</button></div></aside>`;
+}
+function renderE() {
+  return `<main class="e-shell">${lightSidebar()}<section class="e-main"><header><h1>Reviews</h1><span class="d-pill">Inbox 3</span><span class="d-pill">Service healthy</span><button class="secondary" onclick="state.surface='cli';render()">CLI</button></header><div class="e-review"><aside class="e-queue"><span class="eyebrow">Waiting for approval</span><h2>4 proposals</h2><div class="d-review-row active"><strong>Weekly research sync</strong><p>Inbox source · valid v7 · destination required</p></div><div class="d-review-row"><strong>Launch checklist</strong><p>Writing proposal · 2 validation errors</p></div><div class="d-review-row"><strong>Knowledge taxonomy</strong><p>Conflict · no mutation started</p></div><div class="d-review-row"><strong>Customer interview</strong><p>Committed · cleanup needs attention</p></div></aside><section class="e-detail">${reviewDetail()}<footer class="d-work"><div style="display:flex;gap:8px;width:100%"><button class="danger" onclick="openConfirm()">Reject</button><button class="secondary" onclick="deferProposal()">Later</button><span style="flex:1"></span><button class="secondary">Edit</button><button class="primary" ${!state.destination ? 'disabled' : ''} onclick="approve()">Approve exact v7</button></div></footer></section></div></section></main>`;
+}
+function renderF() {
+  const gutter = state.drawerOpen ? 'min(720px,55vw)' : '0';
+  const drawer = state.drawerOpen ? `<aside class="f-drawer"><header><h1>Writing · Weekly project report</h1><button class="secondary" onclick="state.drawerOpen=false;state.event='Drawer closed. Proposal v8 remains in Reviews.';render()">Close</button></header><div class="d-paper"><article><span class="eyebrow">Proposal ${state.commentResolved ? 'v8' : 'v7'}</span><h1>BRN weekly report</h1><p>This week we settled the first version of canonical retrieval and proposal review.</p><p><mark>The retrieval baseline uses deterministic passages in SQLite FTS5.</mark></p>${state.commentResolved ? '<div class="d-comment"><strong>Resolved with v8</strong><br>Expanded the sentence to explain why FTS5 is the baseline. The comment remains in v7 history.</div>' : '<div class="d-comment"><strong>You</strong><br>Explain why this is the baseline, not just what we chose.</div>'}<p>The current delivery date is unknown because no approved canonical record states one.</p></article></div><footer><button class="secondary" onclick="addInlineComment()">Comment</button><button class="secondary" onclick="state.commentResolved=true;state.event='Created v8. All submitted comments were resolved and retained in v7 history.';render()">Rewrite</button><span style="flex:1"></span><button class="secondary">Send to Reviews</button><button class="primary" onclick="state.event='You approved and froze this exact version. Commit started.';render()">Approve & publish</button></footer></aside>` : '';
+  return `<main class="f-shell">${lightSidebar('chat')}<section class="f-chat"><header><strong>Weekly project report</strong><span class="d-pill">Inbox 3</span><span class="d-pill">Service healthy</span>${state.drawerOpen ? '' : '<button class="secondary" onclick="state.drawerOpen=true;render()">Open draft</button>'}<button class="secondary" onclick="state.surface='cli';render()">CLI</button></header><div class="d-messages" style="padding-right:${gutter}"><div class="d-message user">Write a weekly report for project BRN using the Human vault.</div><div class="d-message agent">Draft v7 is ready. I opened it in a temporary drawer. Closing the drawer returns chat to full width without discarding the draft.</div></div><div class="d-composer" style="margin-right:${state.drawerOpen ? 'min(700px,54vw)' : '12px'}"><textarea aria-label="Chat message" placeholder="Ask for a revision…"></textarea><div><span>＋ Add context</span><span>Send ↑</span></div></div></section>${drawer}</main>`;
+}
+function cliForVariant(key) {
+  return `${topbar()}<main class="cli"><span class="dim">BRN interactive review · arrow keys move · Enter inspects · q exits</span><div class="box"><span class="prompt">$</span> <span class="command">brn review</span>\n\n  REVIEW QUEUE                                           4 items\n  <span style="color:var(--accent)">›</span> pending_review   Weekly research sync      source · v7\n    draft            Launch checklist          2 errors\n    conflicted       Knowledge taxonomy        approved v5\n    cleanup_pending  Customer interview        knowledge committed\n\n  <span class="key">↵</span> inspect   <span class="key">p</span> prompt   <span class="key">e</span> edit   <span class="key">d</span> diff   <span class="key">a</span> approve   <span class="key">r</span> reject   <span class="key">q</span> quit</div>
+  <div class="box">WEEKLY RESEARCH SYNC · source · v7 · <span style="color:var(--good)">valid</span>\n\n  provenance  Inbox weekly-research-sync.txt · sha256 9d38…c6f2\n  context     Research planning: “keep its exact wording”\n  change      create Projects/brn/weekly-research-sync.md\n  placement   <span style="color:var(--warn)">uncertain, choose before approval</span>\n\n  <span style="color:var(--accent)">› [1] Projects/brn</span>                  recommended · cites 3 records\n    [2] Areas/knowledge-management    plausible alternative\n    [3] Resources/retrieval           plausible alternative\n    [c] Custom valid path\n\n  Approve will freeze exact v7, create one canonical record, then move\n  the exact Inbox original to macOS Trash.</div>
+  <div class="box">revision request&gt; <span style="color:var(--accent)">Explain why FTS5 is the baseline, not just what we chose.</span>\nCreated proposal v8 · validator@1 passed · returned to review</div><div class="cli-actions"><button onclick="cliEvent('prompt')">p · revision prompt</button><button onclick="cliEvent('compare')">d · diff</button><button onclick="cliEvent('edit')">e · $EDITOR</button><button onclick="cliEvent('approve')">a · approve</button><button onclick="cliEvent('reject')">r · reject</button><button onclick="cliEvent('recover')">x · recover</button></div>
+  <div class="rule"></div><span class="dim">${state.event}</span>\n\n<span class="dim">Noninteractive subcommands expose the same actions for scripts. Every mutation still carries exact IDs, expected versions, and an operation ID.</span></main>`;
+}
+function cliEvent(kind) {
+  const events = {
+    prompt: 'CLI revision prompt sends one focused request and returns with a newly validated proposal version.',
+    compare: 'CLI would page the exact canonical-to-proposal diff.',
+    edit: 'CLI would open v7 in $EDITOR; save creates immutable v8.',
+    approve: 'CLI approval requires an explicit destination and the exact version.',
+    reject: 'CLI rejection previews the tombstone and Inbox suppression before confirmation.',
+    recover: 'CLI recovery offers approved, current, or merged bytes; the choice creates a new draft.'
+  };
+  state.event = events[kind]; render();
+}
+function render() {
+  const key = currentVariant();
+  document.getElementById('variant-label').textContent = `${key} · ${variants[key]}`;
+  document.getElementById('app').innerHTML = state.surface === 'cli' ? cliForVariant(key) : key === 'D' ? renderD() : key === 'E' ? renderE() : renderF();
+}
+document.getElementById('previous').onclick = () => cycle(-1);
+document.getElementById('next').onclick = () => cycle(1);
+document.getElementById('confirm-check').onchange = event => document.getElementById('confirm-reject').disabled = !event.target.checked;
+window.addEventListener('popstate', render);
+window.addEventListener('keydown', event => {
+  if (['INPUT','TEXTAREA'].includes(document.activeElement.tagName) || document.activeElement.isContentEditable) return;
+  if (event.key === 'ArrowLeft') cycle(-1);
+  if (event.key === 'ArrowRight') cycle(1);
+});
+render();
+</script>
+</body>
+</html>
