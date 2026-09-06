@@ -1,0 +1,358 @@
+<!doctype html>
+<!-- THROWAWAY PROTOTYPE. Three variants of BRN chat, navigation, tasks, activity, and retrieval, switchable with ?variant=A|B|C. Do not ship. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BRN chat, navigation, and tasks prototype</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f7f7f4;
+    --paper: #fff;
+    --soft: #f0f2ed;
+    --line: #dce0d8;
+    --ink: #20241f;
+    --muted: #697066;
+    --green: #42683a;
+    --green-soft: #e7f0e2;
+    --amber: #9a641a;
+    --amber-soft: #fff1d5;
+    --red: #a23b32;
+    --red-soft: #fae5e2;
+    --blue: #3d628b;
+    --blue-soft: #e6eef7;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-width: 1020px; min-height: 100vh; overflow: hidden; background: var(--bg); color: var(--ink); font-family: var(--sans); }
+  button, input, select, textarea { font: inherit; }
+  button, select { cursor: pointer; }
+  button:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible { outline: 2px solid #6a8b5e; outline-offset: 2px; }
+  button { color: inherit; }
+  .muted { color: var(--muted); }
+  .mono { font-family: var(--mono); }
+  .eyebrow { color: var(--muted); font-size: 10px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
+  .brand { color: #31482b; font: 800 14px var(--mono); letter-spacing: .08em; }
+  .badge { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); border-radius: 999px; padding: 4px 8px; background: var(--paper); color: var(--muted); font-size: 10px; white-space: nowrap; }
+  .badge::before { width: 6px; height: 6px; border-radius: 50%; background: currentColor; content: ""; }
+  .badge.good { border-color: #cadbc3; background: var(--green-soft); color: var(--green); }
+  .badge.warn { border-color: #ebd19b; background: var(--amber-soft); color: var(--amber); }
+  .badge.bad { border-color: #e9bdb8; background: var(--red-soft); color: var(--red); }
+  .badge.info { border-color: #c7d7e8; background: var(--blue-soft); color: var(--blue); }
+  .plain, .secondary, .primary { border-radius: 8px; padding: 7px 10px; font-weight: 650; }
+  .plain { border: 0; background: transparent; color: var(--muted); }
+  .secondary { border: 1px solid var(--line); background: var(--paper); }
+  .primary { border: 1px solid #273c22; background: #273c22; color: white; }
+  .sidebar { display: flex; min-width: 0; flex-direction: column; border-right: 1px solid var(--line); padding: 12px 9px; background: #eef0eb; }
+  .sidebar .brand { padding: 5px 10px 14px; }
+  .sidebar button { width: 100%; border: 0; border-radius: 7px; padding: 8px 10px; text-align: left; background: transparent; color: #596156; }
+  .sidebar button:hover, .sidebar button.active { background: #dfe4dc; color: var(--ink); }
+  .sidebar button .count { float: right; min-width: 19px; border-radius: 999px; padding: 1px 6px; background: #d0d7cc; text-align: center; font-size: 10px; }
+  .sidebar hr { width: 100%; margin: 9px 0; border: 0; border-top: 1px solid #d4d9d1; }
+  .sidebar .section-label { padding: 8px 10px 5px; }
+  .sidebar .bottom { margin-top: auto; }
+  .sidebar .sub { padding-left: 22px; font-size: 12px; }
+  .header { display: flex; min-height: 53px; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); padding: 9px 14px; background: var(--paper); }
+  .header h1 { flex: 1; margin: 0; overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+  .model { max-width: 160px; border: 1px solid var(--line); border-radius: 7px; padding: 5px 7px; background: white; color: var(--ink); font-size: 11px; }
+  .context-button { border: 0; background: transparent; padding: 0; }
+  .meter { width: 58px; height: 5px; overflow: hidden; border-radius: 99px; background: #d9ddd6; }
+  .meter span { display: block; height: 100%; border-radius: inherit; background: var(--green); }
+  .context-button.warn .meter span { background: var(--amber); }
+  .context-button.bad .meter span { background: var(--red); }
+  .context-label { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; text-align: center; }
+  .chat { display: grid; min-width: 0; min-height: 0; grid-template-rows: auto 1fr auto; background: white; }
+  .messages { overflow: auto; padding: 24px max(25px, calc((100% - 720px) / 2)); }
+  .message { max-width: 700px; margin: 0 auto 22px; font-size: 13px; line-height: 1.55; }
+  .message.user { width: fit-content; max-width: 78%; margin-right: 0; border-radius: 13px 13px 3px 13px; padding: 10px 12px; background: var(--soft); }
+  .message.agent strong:first-child { display: block; margin-bottom: 6px; }
+  .message p { margin: 7px 0; }
+  .citation { border: 0; border-radius: 5px; padding: 1px 5px; background: var(--blue-soft); color: var(--blue); font: 11px var(--mono); }
+  .notice { display: flex; align-items: start; gap: 10px; margin: 12px 0; border: 1px solid var(--line); border-radius: 9px; padding: 10px 11px; background: #fafbf8; }
+  .notice > span:first-child { flex: 1; }
+  .notice small { display: block; margin-top: 3px; color: var(--muted); }
+  .composer { margin: 10px max(18px, calc((100% - 740px) / 2)) 14px; border: 1px solid #ccd2c8; border-radius: 13px; padding: 9px 10px; background: white; box-shadow: 0 3px 15px #1722140d; }
+  .composer textarea { width: 100%; height: 48px; resize: none; border: 0; outline: 0; color: var(--ink); }
+  .composer footer { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 10px; }
+  .activity-line { display: flex; align-items: center; gap: 7px; border-radius: 7px; padding: 7px 8px; color: var(--muted); font-size: 11px; }
+  .activity-line:hover { background: var(--soft); }
+  .activity-line strong { flex: 1; color: var(--ink); font-weight: 650; }
+  .activity-line .spin { width: 8px; height: 8px; border: 2px solid #a7b2a1; border-top-color: var(--green); border-radius: 50%; }
+  .panel { overflow: auto; border-left: 1px solid var(--line); background: #fafbf8; }
+  .panel section { padding: 14px; border-bottom: 1px solid var(--line); }
+  .panel h2 { margin: 4px 0 10px; font-size: 14px; }
+  .task { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: start; padding: 8px 0; font-size: 12px; }
+  .task input { margin-top: 2px; accent-color: var(--green); }
+  .task small { display: block; margin-top: 2px; color: var(--muted); }
+  .search-card { margin: 8px 0; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: white; }
+  .search-card strong { font-size: 12px; }
+  .search-card p { margin: 5px 0; color: #51594e; font-size: 11px; line-height: 1.45; }
+  .search-card small { color: var(--muted); }
+  .details { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 8px; color: #777e74; font: 10px/1.5 var(--mono); }
+  .drawer { position: absolute; z-index: 4; top: 0; right: 0; bottom: 0; display: grid; width: min(560px, 48vw); grid-template-rows: auto 1fr; border-left: 1px solid #cad1c6; background: #fafbf8; box-shadow: -16px 0 42px #25301f1c; }
+  .drawer header { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); padding: 13px 15px; }
+  .drawer header h2 { flex: 1; margin: 0; font-size: 14px; }
+  .drawer-body { overflow: auto; padding: 17px; }
+  .drawer-body h3 { margin: 18px 0 7px; font-size: 13px; }
+  .folder { padding: 6px 8px; border-radius: 6px; font-size: 12px; }
+  .folder.indent { padding-left: 24px; color: var(--muted); }
+  .folder.active { background: var(--green-soft); color: var(--green); }
+  .switcher { position: fixed; z-index: 20; bottom: 15px; left: 50%; display: flex; align-items: center; gap: 7px; transform: translateX(-50%); border: 1px solid #596355; border-radius: 999px; padding: 6px 8px; background: #151914ee; color: white; box-shadow: 0 8px 28px #0005; }
+  .switcher button { display: grid; width: 31px; height: 29px; place-items: center; border: 0; border-radius: 50%; background: #31372f; color: white; }
+  .switcher strong { min-width: 220px; text-align: center; font: 11px var(--mono); }
+
+  /* A keeps work visible beside chat. */
+  .a-shell { display: grid; height: 100vh; grid-template-columns: 215px minmax(430px, 1fr) 290px; }
+
+  /* B keeps chat clean and opens named destinations or an overlay. */
+  .b-shell { position: relative; display: grid; height: 100vh; grid-template-columns: 220px 1fr; }
+  .b-main { display: grid; min-width: 0; min-height: 0; }
+  .b-destination { display: grid; min-width: 0; grid-template-rows: auto 1fr; background: var(--bg); }
+  .destination-body { overflow: auto; padding: 24px max(24px, calc((100% - 900px)/2)) 90px; }
+  .destination-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .destination-card { border: 1px solid var(--line); border-radius: 10px; padding: 14px; background: white; }
+  .destination-card h2 { margin: 3px 0 8px; font-size: 14px; }
+
+  /* C puts secondary work in a collapsible tray. */
+  .c-shell { display: grid; height: 100vh; grid-template-columns: 205px 1fr; }
+  .c-workspace { display: grid; min-width: 0; min-height: 0; grid-template-rows: 1fr auto; }
+  .c-chat { display: grid; min-height: 0; grid-template-columns: minmax(420px, 1fr) 240px; }
+  .c-strip { border-left: 1px solid var(--line); background: #fafbf8; }
+  .c-strip section { padding: 12px; border-bottom: 1px solid var(--line); }
+  .c-strip h2 { margin: 3px 0 8px; font-size: 12px; }
+  .tray { max-height: 215px; overflow: auto; border-top: 1px solid #cfd5cb; background: #edf0ea; }
+  .tray header { display: flex; align-items: center; gap: 8px; padding: 8px 13px; }
+  .tray header strong { flex: 1; font-size: 11px; }
+  .tray-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; border-top: 1px solid var(--line); }
+  .tray-grid section { min-height: 105px; padding: 10px 13px 36px; border-right: 1px solid var(--line); }
+  .tray-grid h3 { margin: 2px 0 7px; font-size: 11px; }
+
+  .cli { min-height: 100vh; overflow: auto; padding: 28px max(30px, calc((100vw - 1050px)/2)) 80px; background: #0e110e; color: #dfe7db; font: 12px/1.55 var(--mono); }
+  .cli .dim { color: #7f8b79; }
+  .cli .green { color: #a9df85; }
+  .cli .amber { color: #f2c36c; }
+  .cli .blue { color: #8dbbe8; }
+  .cli .box { margin: 13px 0; border: 1px solid #384136; padding: 13px; white-space: pre-wrap; }
+  .cli .key { display: inline-block; min-width: 26px; border: 1px solid #4d5849; border-radius: 4px; padding: 0 5px; text-align: center; }
+  .cli-tabs { display: flex; gap: 8px; margin: -14px 0 18px; border-bottom: 1px solid #232a21; }
+  .cli-tabs button { border: 0; padding: 4px 10px; background: transparent; color: #7f8b79; font: 12px var(--mono); }
+  .cli-tabs button.active { background: #2c6cbd; color: white; }
+  .cli-screen { display: grid; min-height: calc(100vh - 155px); grid-template-rows: auto 1fr auto auto; }
+  .cli-panel { padding: 10px 5px; white-space: pre-wrap; }
+  .cli-prompt { height: 45px; border: 1px solid #1f2720; padding: 12px; background: #151b20; }
+  .cli-help { padding: 8px 4px 0; color: #8d9788; }
+  .cli-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+  .cli-actions button { border: 1px solid #465141; border-radius: 5px; padding: 5px 8px; background: #181d17; color: #dfe7db; font: 11px var(--mono); }
+  .toast { position: fixed; z-index: 30; right: 16px; bottom: 16px; max-width: 360px; border: 1px solid #b8c4b2; border-radius: 9px; padding: 11px 13px; background: #f4f8f1; box-shadow: 0 8px 26px #0002; font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="switcher" aria-label="Prototype variant switcher">
+  <button id="previous" aria-label="Previous variant">←</button>
+  <strong id="variant-label"></strong>
+  <button id="next" aria-label="Next variant">→</button>
+</div>
+<script>
+const variants = {
+  A: 'Always-visible sidecar',
+  B: 'Chat-first destinations · selected',
+  C: 'Activity tray'
+};
+const state = {
+  surface: 'web',
+  destination: 'chat',
+  drawer: '',
+  contextIndex: 1,
+  model: 'claude-sonnet-4',
+  technical: false,
+  trayOpen: true,
+  taskStatus: 'open',
+  toast: '',
+  cliView: 'current'
+};
+const contextStates = [
+  { value: null, label: 'Context —', tone: '', detail: 'Usage unavailable. Chat remains usable.' },
+  { value: 54, label: 'Context 54%', tone: '', detail: 'Numeric usage from Pi.' },
+  { value: 78, label: 'Context 78%', tone: '', detail: 'No BRN warning threshold. Pi still owns compaction.' },
+  { value: 92, label: 'Context 92%', tone: '', detail: 'No BRN warning threshold. Pi still owns compaction.' }
+];
+function currentVariant() {
+  const key = new URLSearchParams(location.search).get('variant')?.toUpperCase();
+  return variants[key] ? key : 'B';
+}
+function setVariant(key) {
+  const url = new URL(location.href);
+  url.searchParams.set('variant', key);
+  history.replaceState(null, '', url);
+  render();
+}
+function cycle(step) {
+  const keys = Object.keys(variants);
+  const index = keys.indexOf(currentVariant());
+  setVariant(keys[(index + step + keys.length) % keys.length]);
+}
+function setSurface(surface) { state.surface = surface; render(); }
+function selectDestination(destination) { state.destination = destination; state.drawer = ''; render(); }
+function openDrawer(drawer) { state.drawer = drawer; render(); }
+function closeDrawer() { state.drawer = ''; render(); }
+function notify(text) { state.toast = text; render(); setTimeout(() => { if (state.toast === text) { state.toast = ''; render(); } }, 2600); }
+function escapeHtml(text) { const node = document.createElement('div'); node.textContent = text; return node.innerHTML; }
+function cycleContext() { state.contextIndex = (state.contextIndex + 1) % contextStates.length; render(); }
+function contextControl() {
+  const item = contextStates[state.contextIndex];
+  const width = item.value ?? 0;
+  return `<button class="context-button ${item.tone}" onclick="cycleContext()" title="${item.detail}"><span class="meter"><span style="width:${width}%"></span></span><span class="context-label">${item.label}</span></button>`;
+}
+function modelControl() {
+  return `<select class="model" aria-label="Session model" onchange="state.model=this.value;notify('Model changes after the current response and keeps this session history.')">
+    <option value="claude-sonnet-4" ${state.model === 'claude-sonnet-4' ? 'selected' : ''}>Claude Sonnet 4</option>
+    <option value="gpt-5" ${state.model === 'gpt-5' ? 'selected' : ''}>GPT-5</option>
+    <option value="gemini-2.5-pro" ${state.model === 'gemini-2.5-pro' ? 'selected' : ''}>Gemini 2.5 Pro</option>
+  </select>`;
+}
+function sidebar(active = state.destination, compact = false) {
+  return `<aside class="sidebar"><span class="brand">BRN</span>
+    <button onclick="notify('Started a new shared Pi session.')">＋ New chat</button>
+    <button class="${active === 'reviews' ? 'active' : ''}" onclick="selectDestination('reviews')">Reviews <span class="count">4</span></button>
+    <button class="${active === 'tasks' ? 'active' : ''}" onclick="selectDestination('tasks')">Tasks <span class="count">3</span></button>
+    <button class="${active === 'inbox' ? 'active' : ''}" onclick="selectDestination('inbox')">Inbox <span class="count">2</span></button>
+    <button class="${active === 'vault' ? 'active' : ''}" onclick="selectDestination('vault')">Human vault</button>
+    <hr><span class="eyebrow section-label">Sessions</span>
+    <button class="${active === 'chat' ? 'active' : ''}" onclick="selectDestination('chat')">Weekly project report</button>
+    <button class="sub" onclick="notify('Opened shared session Research planning.')">Research planning</button>
+    <button class="sub" onclick="notify('Opened shared session Vault taxonomy.')">Vault taxonomy</button>
+    ${compact ? '' : '<button class="sub muted" onclick="notify(\'Background workflow sessions stay in run details, not this list.\')">Older sessions…</button>'}
+    <div class="bottom"><button onclick="notify('Settings includes the default model and Pi provider login.')">Settings</button><button onclick="setSurface('cli')">Open CLI preview</button></div>
+  </aside>`;
+}
+function header(title = 'Weekly project report') {
+  return `<header class="header"><h1>${title}</h1><button class="badge warn" onclick="selectDestination('inbox')">Inbox 2</button><span class="badge good">Service ready</span>${contextControl()}${modelControl()}<button class="secondary" onclick="setSurface('cli')">CLI</button></header>`;
+}
+function taskNotice() {
+  const open = state.taskStatus === 'open';
+  return `<div class="notice"><span><strong>${open ? 'Task created' : 'Task cancelled'}</strong><small>Confirm the BRN delivery date · from this session</small></span><button class="plain" onclick="${open ? 'cancelTask()' : 'reopenTask()'}">${open ? 'Undo' : 'Reopen'}</button></div>`;
+}
+function cancelTask() { state.taskStatus = 'cancelled'; notify('Task cancelled. Reopen remains available from Tasks.'); }
+function reopenTask() { state.taskStatus = 'open'; notify('Task reopened with its original session context.'); }
+function setTaskComplete(complete) {
+  state.taskStatus = complete ? 'completed' : 'open';
+  notify(complete ? 'Task completed. The transition keeps its session context.' : 'Task reopened with its original session context.');
+}
+function resultCards() {
+  return `<article class="search-card"><strong>BRN weekly research sync</strong><p>“The retrieval baseline should favor deterministic passages…”</p><small>Projects/brn · Decisions · score 8.41</small></article>
+    <article class="search-card"><strong>Proposal review decisions</strong><p>“Approval freezes the exact proposal version and preconditions…”</p><small>Areas/knowledge-systems · Approval · score 6.92</small></article>`;
+}
+function activityRows(limit = false) {
+  const technical = state.technical ? `<div class="details">search_records {query:"BRN decisions", limit:10}<br>session 2df7…8ca1 · event 184<br>worker 18b0…d3f9 · model inherited</div>` : '';
+  return `<div class="activity-line"><span class="spin"></span><strong>Worker checking unresolved work</strong><span>18s</span></div>
+    <div class="activity-line"><span>✓</span><strong>Searched Human vault</strong><span>7 results</span></div>
+    ${limit ? '' : '<div class="activity-line"><span>✓</span><strong>Created one task</strong><span>now</span></div><div class="activity-line"><span>✓</span><strong>Pi compaction completed</strong><span>78% → 31%</span></div>'}
+    ${technical}`;
+}
+function chatBody(kind = 'inline') {
+  const inline = kind === 'inline';
+  return `<div class="messages">
+    <div class="message user">Summarize this week's BRN decisions, call out unresolved work, and remind me what I need to do.</div>
+    <div class="message agent"><strong>Agent</strong><p>This week you settled deterministic FTS5 retrieval and exact proposal approval. Retrieval excludes archived records unless you grant archive access for this command. <button class="citation" onclick="openDrawer('result1')">1</button> <button class="citation" onclick="openDrawer('result2')">2</button></p><p>The implementation backlog and release quality gates are still unresolved. I delegated a read-only check of the relevant records.</p>${inline ? taskNotice() : ''}</div>
+    ${inline ? `<div class="message"><span class="eyebrow">Agent activity</span>${activityRows(true)}<button class="plain" onclick="state.technical=!state.technical;render()">${state.technical ? 'Hide technical details' : 'Show technical details'}</button></div>` : ''}
+  </div><div class="composer"><textarea aria-label="Message" placeholder="Message BRN…"></textarea><footer><span>Add records or allow archives for one command</span><button class="primary" onclick="notify('Prompt queued in this shared session.')">Send</button></footer></div>`;
+}
+function tasksPanel() {
+  return `<section><span class="eyebrow">Open tasks · 3</span><h2>Your actions</h2>
+    <label class="task"><input type="checkbox" ${state.taskStatus === 'completed' ? 'checked' : ''} onchange="setTaskComplete(this.checked)"><span><strong>Confirm the BRN delivery date</strong><small>Weekly project report · ${state.taskStatus}</small></span><button class="plain" onclick="openDrawer('task')">Open</button></label>
+    <label class="task"><input type="checkbox"><span><strong>Choose release quality gates</strong><small>AI Knowledge Vault v1 · yesterday</small></span><button class="plain">Open</button></label>
+    <label class="task"><input type="checkbox"><span><strong>Review Inbox duplicate</strong><small>Inbox · 2 days ago</small></span><button class="plain">Open</button></label>
+  </section>`;
+}
+function retrievalPanel() {
+  return `<section><span class="eyebrow">Evidence in this answer</span><h2>2 of 7 results used</h2>${resultCards()}<button class="plain" onclick="openDrawer('results')">Inspect all results</button></section>`;
+}
+function activityPanel() {
+  return `<section><span class="eyebrow">Agent activity</span><h2>What is happening</h2>${activityRows()}<button class="plain" onclick="state.technical=!state.technical;render()">${state.technical ? 'Hide technical details' : 'Show technical details'}</button></section>`;
+}
+function drawer() {
+  if (!state.drawer) return '';
+  let title = 'Search results';
+  let body = `${resultCards()}<h3>Scope</h3><p>Active Human-vault records only. Archives were not authorized for this command. Agent-vault records and Inbox files were not searched.</p><p class="muted">7 matching records · retrieval profile fts5@1 · 14 ms</p>`;
+  if (state.drawer === 'result1') {
+    title = 'BRN weekly research sync';
+    body = `<span class="badge info">Canonical record</span><h3>Decisions</h3><p>The retrieval baseline should favor deterministic passages and expose the evidence used for placement.</p><h3>Location</h3><p class="mono">Projects/brn/weekly-research-sync.md</p><button class="secondary" onclick="notify('Opened the canonical record in Human vault navigation.')">Open record</button>`;
+  } else if (state.drawer === 'result2') {
+    title = 'Proposal review decisions';
+    body = `<span class="badge info">Canonical record</span><h3>Approval</h3><p>Approval freezes the exact proposal version and Human-vault preconditions. A later change needs a new approval.</p><h3>Location</h3><p class="mono">Areas/knowledge-systems/proposal-review.md</p>`;
+  } else if (state.drawer === 'task') {
+    title = 'Confirm the BRN delivery date';
+    const complete = state.taskStatus === 'completed';
+    body = `<span class="badge ${complete ? 'good' : 'warn'}">${state.taskStatus}</span><h3>Context</h3><p>Created from Weekly project report when no canonical record supplied a delivery date.</p><h3>History</h3><p class="muted">Created by agent · operation 1c70…3ef9 · today 10:42</p><button class="secondary" onclick="${complete ? 'reopenTask()' : 'setTaskComplete(true)'}">${complete ? 'Reopen task' : 'Complete task'}</button>`;
+  }
+  return `<aside class="drawer"><header><h2>${title}</h2><button class="secondary" onclick="closeDrawer()">Close</button></header><div class="drawer-body">${body}</div></aside>`;
+}
+function renderA() {
+  return `<main class="a-shell">${sidebar('chat')}<section class="chat">${header()}${chatBody('plain')}</section><aside class="panel">${tasksPanel()}${activityPanel()}${retrievalPanel()}</aside>${drawer()}</main>`;
+}
+function destinationContent() {
+  if (state.destination === 'chat') return `<section class="chat">${header()}${chatBody('inline')}</section>`;
+  const data = {
+    tasks: ['Tasks', `<div class="destination-grid"><article class="destination-card"><span class="eyebrow">Open · 3</span><h2>User actions</h2>${tasksPanel()}</article><article class="destination-card"><span class="eyebrow">Recently changed</span><h2>Task history</h2><p class="muted">Every completion, cancellation, and reopen keeps its actor, time, operation ID, and source context.</p></article></div>`],
+    vault: ['Human vault', `<div class="destination-grid"><article class="destination-card"><span class="eyebrow">PARA</span><h2>Browse canonical records</h2><div class="folder">▾ Projects</div><div class="folder indent active">BRN · 18 records</div><div class="folder">▸ Areas</div><div class="folder">▸ Resources</div><div class="folder">▸ Archives · excluded by default</div></article><article class="destination-card"><span class="eyebrow">Projects / BRN</span><h2>Recent records</h2>${resultCards()}</article></div>`],
+    inbox: ['Inbox', `<div class="destination-grid"><article class="destination-card"><span class="badge warn">2 need attention</span><h2>Source status</h2><p><strong>interview-notes.txt</strong><br><span class="muted">Ready for review · proposal v3</span></p><p><strong>roadmap.md</strong><br><span class="muted">Duplicate bytes · choose keep or Trash</span></p></article><article class="destination-card"><span class="eyebrow">Healthy</span><h2>Processing</h2><p class="muted">4 sources processed this launch. One writing workflow is active.</p>${activityRows(true)}</article></div>`],
+    reviews: ['Reviews', `<div class="destination-grid"><article class="destination-card"><span class="eyebrow">Attention · 4</span><h2>Proposal queue</h2><p>Weekly research sync <span class="badge good">valid</span></p><p>Launch checklist <span class="badge bad">2 errors</span></p><p>Knowledge taxonomy <span class="badge warn">conflicted</span></p></article><article class="destination-card"><span class="eyebrow">Selected design</span><h2>Review opens in a drawer</h2><p class="muted">This prototype preserves the separate Reviews destination and overlay behavior already chosen in the review prototype.</p></article></div>`]
+  };
+  const [title, body] = data[state.destination] || data.tasks;
+  return `<section class="b-destination">${header(title)}<div class="destination-body">${body}</div></section>`;
+}
+function renderB() {
+  return `<main class="b-shell">${sidebar()}<section class="b-main">${destinationContent()}</section>${drawer()}</main>`;
+}
+function renderC() {
+  return `<main class="c-shell">${sidebar('chat', true)}<section class="c-workspace"><div class="c-chat"><section class="chat">${header()}${chatBody('plain')}</section><aside class="c-strip"><section><span class="eyebrow">Session facts</span><h2>Weekly project report</h2><p class="muted" style="font-size:11px">Shared Pi session<br>${state.model}<br>Context ${contextStates[state.contextIndex].value ?? 'unknown'}%</p></section>${tasksPanel()}</aside></div><section class="tray"><header><strong>Work tray · 1 active · 2 results · Inbox 2</strong><button class="plain" onclick="state.technical=!state.technical;render()">${state.technical ? 'Hide details' : 'Technical details'}</button><button class="plain" onclick="state.trayOpen=!state.trayOpen;render()">${state.trayOpen ? 'Collapse' : 'Expand'}</button></header>${state.trayOpen ? `<div class="tray-grid"><section><span class="eyebrow">Agent activity</span>${activityRows(true)}</section><section><span class="eyebrow">Retrieval</span><h3>7 records matched</h3><p class="muted" style="font-size:11px">2 cited in this answer. Archives excluded.</p><button class="plain" onclick="openDrawer('results')">Results</button></section><section><span class="eyebrow">Inbox</span><h3>2 need attention</h3><p class="muted" style="font-size:11px">1 proposal ready. 1 duplicate needs a choice.</p></section></div>` : ''}</section></section>${drawer()}</main>`;
+}
+const cliTabs = ['current', 'sessions', 'tasks', 'vault', 'inbox', 'reviews', 'activity'];
+function cliOutput() {
+  if (state.cliView === 'sessions') return `SESSIONS · shared with web\n\n<span class="green">›</span> 2df7…8ca1  Weekly project report   active   ${state.model}\n  017a…502d  Research planning       2h ago\n  6aa2…4c98  Vault taxonomy          yesterday\n\n<span class="dim">Background workflow sessions appear in run details, not this list.\nEnter opens a session. n creates one. / filters.</span>`;
+  if (state.cliView === 'tasks') return `TASKS · 3 open\n\n<span class="green">›</span> 10fb…9ca2  Confirm the BRN delivery date\n               context: Weekly project report, “remind me what I need to do”\n  c4c2…ab80  Choose release quality gates\n  a987…1d42  Review Inbox duplicate\n\n<span class="key">c</span> complete  <span class="key">x</span> cancel  <span class="key">o</span> open context  <span class="key">r</span> reopen`;
+  if (state.cliView === 'vault') return `HUMAN VAULT · approved canonical records\n\n  Projects/\n  <span class="green">└─ brn/                         18 records</span>\n  Areas/\n  Resources/\n  Archives/                      <span class="dim">excluded unless this search allows it</span>\n\n<span class="green">search&gt;</span> BRN decisions\n  [1] BRN weekly research sync   Projects/brn · Decisions\n  [2] Proposal review decisions  Areas/knowledge-systems · Approval`;
+  if (state.cliView === 'inbox') return `INBOX · 2 need attention\n\n<span class="green">›</span> interview-notes.txt   ready for review · proposal v3\n  roadmap.md           duplicate bytes · choose keep or Trash\n\n<span class="dim">4 sources processed this launch. One writing workflow is active.</span>`;
+  if (state.cliView === 'reviews') return `REVIEWS · 4 need attention\n\n<span class="green">›</span> pending_review  Weekly research sync   valid v7\n  draft           Launch checklist       2 errors\n  conflicted      Knowledge taxonomy     approved v5\n  cleanup_pending Customer interview     knowledge committed\n\n<span class="dim">Enter opens the interactive review detail chosen in the earlier prototype.</span>`;
+  if (state.cliView === 'activity') return `ACTIVITY · summaries\n\n  <span class="amber">running</span>  Worker checking unresolved work       18s\n  complete   Searched Human vault                 7 results\n  complete   Created task                          10fb…9ca2\n\n${state.technical ? '<span class="dim">search_records {query:"BRN decisions", limit:10}\nsession 2df7…8ca1 · worker 18b0…d3f9 · model inherited</span>' : '<span class="dim">Raw tool calls hidden. Press d for technical details.</span>'}`;
+  return `<span class="green">you&gt;</span> Summarize this week's BRN decisions, call out unresolved work, and remind me what I need to do.\n\n<span class="blue">agent&gt;</span> This week you settled deterministic FTS5 retrieval and exact proposal approval. Retrieval excludes archives unless you authorize them for this command. [1] [2]\n\nThe implementation backlog and release gates remain unresolved. I created task 10fb…9ca2: Confirm the BRN delivery date.\n\n<span class="dim">Searched 7 canonical records · Worker active · 1 task created\nRaw tool calls hidden. Open Activity for summaries or technical details.</span>`;
+}
+function setCliView(view) { state.cliView = view; render(); }
+function cycleCliTab(step) {
+  const index = cliTabs.indexOf(state.cliView);
+  setCliView(cliTabs[(index + step + cliTabs.length) % cliTabs.length]);
+}
+function renderCli() {
+  const item = contextStates[state.contextIndex];
+  const tabs = cliTabs.map(tab => `<button class="${state.cliView === tab ? 'active' : ''}" onclick="setCliView('${tab}')">${tab[0].toUpperCase() + tab.slice(1)}</button>`).join('');
+  return `<main class="cli"><nav class="cli-tabs" aria-label="CLI panels">${tabs}</nav><section class="cli-screen"><header><span class="dim">BRN v1 · shared Pi session 2df7…8ca1</span><span style="float:right">Session: ${item.label.replace('Context ', '')} used</span></header><div class="cli-panel">${cliOutput()}</div><div class="cli-prompt">${state.cliView === 'current' ? '<span class="green">›</span> Message BRN…' : '<span class="dim">/ filter this panel…</span>'}</div><footer class="cli-help">← open sidebar · / commands · ? help · Tab next panel · Shift-Tab previous panel</footer></section>
+  <div class="cli-actions"><button onclick="cycleCliTab(-1)">previous panel</button><button onclick="cycleCliTab(1)">next panel</button><button onclick="state.technical=!state.technical;setCliView('activity')">d · details</button><button onclick="cycleContext()">simulate context</button><button onclick="setSurface('web')">web preview</button></div>
+  <p class="dim">Standalone commands remain for scripts. Mutations require exact IDs, expected state, and an operation ID.</p></main>`;
+}
+function render() {
+  const key = currentVariant();
+  document.getElementById('variant-label').textContent = `${key} · ${variants[key]}`;
+  document.getElementById('app').innerHTML = state.surface === 'cli' ? renderCli() : key === 'A' ? renderA() : key === 'C' ? renderC() : renderB();
+  document.getElementById('toast')?.remove();
+  if (state.toast) document.body.insertAdjacentHTML('beforeend', `<div class="toast" id="toast">${escapeHtml(state.toast)}</div>`);
+}
+document.getElementById('previous').onclick = () => cycle(-1);
+document.getElementById('next').onclick = () => cycle(1);
+window.addEventListener('popstate', render);
+window.addEventListener('keydown', event => {
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName) || document.activeElement.isContentEditable) return;
+  if (state.surface === 'cli' && event.key === 'Tab') {
+    event.preventDefault();
+    cycleCliTab(event.shiftKey ? -1 : 1);
+    return;
+  }
+  if (event.key === 'ArrowLeft') cycle(-1);
+  if (event.key === 'ArrowRight') cycle(1);
+});
+render();
+</script>
+</body>
+</html>
