@@ -47,7 +47,7 @@ import { createControlledResourceLoader } from "./resources.ts";
 const CATALOG_TIMEOUT_MS = 15_000;
 
 /** No BRN conversation asks a provider for more than this in one response. */
-const MAX_RESPONSE_TOKENS = 4096;
+export const MAX_RESPONSE_TOKENS = 4096;
 
 /** Compaction stays on, with the reserve BRN's conversations are sized for. */
 const COMPACTION = {

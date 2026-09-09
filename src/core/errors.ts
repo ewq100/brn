@@ -48,6 +48,12 @@ export type BrnErrorCode =
 	| "OPERATION_CONFLICT"
 	/** No model is recorded for the conversation, so there is nothing to run it with. */
 	| "NO_MODEL"
+	/** The submitted prompt is empty or contains nothing but whitespace. */
+	| "EMPTY_PROMPT"
+	/** The submitted prompt exceeds the maximum accepted size in UTF-8 bytes. */
+	| "INPUT_TOO_LARGE"
+	/** A referenced native result entry is absent, so no result text can be resolved. */
+	| "RESULT_UNAVAILABLE"
 	/** The requested model is not offered by any authenticated provider. */
 	| "MODEL_UNAVAILABLE"
 	/** The named conversation cannot be opened, so no conversation is hosted for it. */

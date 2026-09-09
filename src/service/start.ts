@@ -15,6 +15,7 @@ import {
 	type Ownership,
 	requireSafeManagedFile,
 } from "./ownership.ts";
+import { createPiConversation } from "./pi/conversation.ts";
 import { openPiRuntime, type PiHost } from "./pi/runtime.ts";
 import { proveFts5 } from "./sqlite.ts";
 
@@ -198,6 +199,10 @@ export async function startService(options: {
 		ownership.release();
 		throw error;
 	}
+	// The conversation seam the operation coordinator drives. It adds no state of
+	// its own: the host owns the conversation, and closing the engine only settles
+	// a run that is still in flight.
+	const engine = createPiConversation(piHost);
 
 	const instanceId = randomUUID();
 	const token = randomBytes(TOKEN_BYTES).toString("base64url");
@@ -234,12 +239,16 @@ export async function startService(options: {
 		server.close();
 		server.closeAllConnections();
 		try {
-			await piHost.close();
+			await engine.close();
 		} finally {
 			try {
-				store.close();
+				await piHost.close();
 			} finally {
-				ownership.release();
+				try {
+					store.close();
+				} finally {
+					ownership.release();
+				}
 			}
 		}
 		throw error;
@@ -261,16 +270,22 @@ export async function startService(options: {
 				});
 				await withdrawDiscovery(ownership.root, instanceId);
 			} finally {
-				// Shutdown reverses startup: the conversation host settles and the
-				// ledger closes before ownership is released, so no second writer can
-				// appear while either is still open.
+				// Shutdown reverses startup: the engine stops driving a run, the
+				// conversation host settles and the ledger closes before ownership is
+				// released, so no second writer can appear while any of them is still
+				// open. Every step runs even when an earlier one fails, and the
+				// ownership release stays last.
 				try {
-					await piHost.close();
+					await engine.close();
 				} finally {
 					try {
-						store.close();
+						await piHost.close();
 					} finally {
-						ownership.release();
+						try {
+							store.close();
+						} finally {
+							ownership.release();
+						}
 					}
 				}
 			}

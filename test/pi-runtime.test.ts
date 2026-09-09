@@ -3,270 +3,29 @@
  *
  * Nothing here mocks `createAgentSession` or any other Pi function: the host
  * builds genuine `AgentSession`s against the official faux provider, so the
- * assertions are about what the shipped SDK actually does. The fixture keeps that
- * honest by refusing network access and by planting personal Pi resources the
- * host must never load.
+ * assertions are about what the shipped SDK actually does. The shared fixture in
+ * `test/support/pi.ts` keeps that honest by refusing network access and by
+ * planting personal Pi resources the host must never load.
  */
 
 import { existsSync } from "node:fs";
-import {
-	mkdir,
-	mkdtemp,
-	readFile,
-	realpath,
-	rm,
-	writeFile,
-} from "node:fs/promises";
-import http from "node:http";
-import https from "node:https";
-import { tmpdir } from "node:os";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import {
-	fauxAssistantMessage,
-	fauxProvider,
-	InMemoryCredentialStore,
-} from "@earendil-works/pi-ai";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { expect, test } from "vitest";
-import { isBrnError } from "../src/core/errors.ts";
-import {
-	openOperationStore,
-	type ServiceStore,
-} from "../src/service/operation-store.ts";
-import { createOrValidateManagedFile } from "../src/service/ownership.ts";
 import { openPiRuntime, type PiHost } from "../src/service/pi/runtime.ts";
+import {
+	extensionMarker,
+	failureCode,
+	OFFLINE_MODEL,
+	offlineModels,
+	openPiTestRoot,
+	SENTINEL,
+} from "./support/pi.ts";
 
-/** Appears in every planted personal resource. It must never reach a session. */
-const SENTINEL = "BRN_AMBIENT_SENTINEL";
-
-const OFFLINE_MODEL = { provider: "brn-test", id: "offline" };
 const SECOND_MODEL = { provider: "brn-test", id: "second" };
-
-type PiTestRoot = {
-	root: string;
-	/** The fake home the fixture points `HOME` at, so Pi's own agent dir lands here. */
-	home: string;
-	store: ServiceStore;
-	close(): Promise<void>;
-};
-
-/**
- * Replaces every outbound HTTP entry point with a refusal.
- *
- * A test that silently reaches a provider is a failed test, not a slow one, so
- * the attempt has to fail loudly. Only the HTTP surfaces a provider would use are
- * blocked; vitest's own worker channel does not go through them.
- */
-function blockNetwork(): () => void {
-	const refuse = (surface: string) => () => {
-		throw new Error(`offline test attempted network access via ${surface}`);
-	};
-	const original = {
-		fetch: globalThis.fetch,
-		httpRequest: http.request,
-		httpGet: http.get,
-		httpsRequest: https.request,
-		httpsGet: https.get,
-	};
-	globalThis.fetch = refuse("fetch") as unknown as typeof globalThis.fetch;
-	http.request = refuse("http.request") as unknown as typeof http.request;
-	http.get = refuse("http.get") as unknown as typeof http.get;
-	https.request = refuse("https.request") as unknown as typeof https.request;
-	https.get = refuse("https.get") as unknown as typeof https.get;
-	return () => {
-		globalThis.fetch = original.fetch;
-		http.request = original.httpRequest;
-		http.get = original.httpGet;
-		https.request = original.httpsRequest;
-		https.get = original.httpsGet;
-	};
-}
-
-/**
- * Hides the real home directory and every inherited provider credential.
- *
- * An inherited `ANTHROPIC_API_KEY` would make a "no model available" assertion
- * pass or fail for reasons that have nothing to do with BRN.
- */
-function isolateEnvironment(home: string): () => void {
-	const saved = new Map<string, string | undefined>();
-	const hide = (key: string) => {
-		saved.set(key, process.env[key]);
-		delete process.env[key];
-	};
-	for (const key of Object.keys(process.env)) {
-		if (
-			/API_KEY|_TOKEN|CREDENTIAL|ANTHROPIC|OPENAI|GEMINI|GOOGLE|AZURE|AWS|MISTRAL|GROQ|XAI|DEEPSEEK|OPENROUTER|CEREBRAS|VERTEX|^PI_/i.test(
-				key,
-			)
-		) {
-			hide(key);
-		}
-	}
-	for (const key of ["HOME", "USERPROFILE", "XDG_CONFIG_HOME"]) {
-		saved.set(key, process.env[key]);
-		process.env[key] = home;
-	}
-	return () => {
-		for (const [key, value] of saved) {
-			if (value === undefined) delete process.env[key];
-			else process.env[key] = value;
-		}
-	};
-}
-
-/** The file the planted extension writes if it is ever imported and run. */
-function extensionMarker(home: string): string {
-	return join(home, ".pi", "agent", "extensions", "sentinel.loaded");
-}
-
-/**
- * Plants the personal Pi installation BRN must ignore: context files, settings,
- * a skill, a prompt template and an extension, in both the fake home and the
- * conversation's working directory.
- */
-async function plantAmbientResources(
-	home: string,
-	work: string,
-): Promise<void> {
-	const agentDir = join(home, ".pi", "agent");
-	for (const dir of [
-		join(agentDir, "skills", "sentinel"),
-		join(agentDir, "prompts"),
-		join(agentDir, "extensions"),
-		join(work, ".pi", "extensions"),
-	]) {
-		await mkdir(dir, { recursive: true, mode: 0o700 });
-	}
-	const marker = extensionMarker(home);
-	const extension = [
-		'import { writeFileSync } from "node:fs";',
-		`writeFileSync(${JSON.stringify(marker)}, "loaded");`,
-		"export default () => ({});",
-		"",
-	].join("\n");
-	await writeFile(join(home, "AGENTS.md"), `# ${SENTINEL} home instructions\n`);
-	await writeFile(
-		join(work, "AGENTS.md"),
-		`# ${SENTINEL} project instructions\n`,
-	);
-	await writeFile(
-		join(agentDir, "settings.json"),
-		`${JSON.stringify({
-			defaultProvider: SENTINEL,
-			defaultModel: SENTINEL,
-			extensions: [join(agentDir, "extensions", "sentinel.js")],
-			skills: [join(agentDir, "skills")],
-			prompts: [join(agentDir, "prompts")],
-			compaction: { enabled: false },
-		})}\n`,
-	);
-	await writeFile(
-		join(work, ".pi", "settings.json"),
-		`${JSON.stringify({ defaultProvider: SENTINEL })}\n`,
-	);
-	await writeFile(
-		join(agentDir, "skills", "sentinel", "SKILL.md"),
-		`---\nname: ${SENTINEL}\ndescription: ${SENTINEL}\n---\n\n${SENTINEL}\n`,
-	);
-	await writeFile(join(agentDir, "prompts", "sentinel.md"), `${SENTINEL}\n`);
-	// A personal model catalog. The production model runtime is configured with
-	// `modelsPath: null`, so this must never become an offered model.
-	await writeFile(
-		join(agentDir, "models.json"),
-		`${JSON.stringify({
-			providers: {
-				[SENTINEL]: {
-					name: SENTINEL,
-					api: "openai-completions",
-					baseUrl: "https://sentinel.invalid/v1",
-					apiKey: SENTINEL,
-					models: [
-						{
-							id: SENTINEL,
-							name: SENTINEL,
-							reasoning: false,
-							contextWindow: 32768,
-							maxTokens: 4096,
-						},
-					],
-				},
-			},
-		})}\n`,
-	);
-	await writeFile(join(agentDir, "extensions", "sentinel.js"), extension);
-	await writeFile(join(work, ".pi", "extensions", "sentinel.js"), extension);
-}
-
-/**
- * Opens a guarded state root with the real metadata store, an isolated
- * environment and no network.
- *
- * The work directory is created here, before the host validates it, so the
- * planted project resources are already in place when a conversation starts.
- */
-async function openPiTestRoot(): Promise<PiTestRoot> {
-	const base = await mkdtemp(join(await realpath(tmpdir()), "brn-pi-"));
-	const root = join(base, "state");
-	const home = join(base, "home");
-	await mkdir(root, { mode: 0o700 });
-	await mkdir(join(root, "work"), { mode: 0o700 });
-	await plantAmbientResources(home, join(root, "work"));
-	const restoreEnvironment = isolateEnvironment(home);
-	const restoreNetwork = blockNetwork();
-	const databasePath = join(root, "operations.sqlite");
-	await createOrValidateManagedFile(databasePath);
-	const store = openOperationStore(databasePath);
-	return {
-		root,
-		home,
-		store,
-		async close() {
-			store.close();
-			restoreNetwork();
-			restoreEnvironment();
-			await rm(base, { recursive: true, force: true });
-		},
-	};
-}
-
-/** The offline model runtime every test drives the real SDK with. */
-async function offlineModels(
-	contextWindow = 32768,
-	extraModelIds: readonly string[] = [],
-): Promise<{ models: ModelRuntime; faux: ReturnType<typeof fauxProvider> }> {
-	const faux = fauxProvider({
-		provider: "brn-test",
-		api: "brn-test",
-		models: ["offline", ...extraModelIds].map((id) => ({
-			id,
-			name: id,
-			reasoning: false,
-			contextWindow,
-			maxTokens: 4096,
-		})),
-	});
-	const models = await ModelRuntime.create({
-		credentials: new InMemoryCredentialStore(),
-		modelsPath: null,
-		allowModelNetwork: false,
-		refreshOnCreate: false,
-	});
-	models.registerNativeProvider(faux.provider);
-	await models.refresh({ allowNetwork: false });
-	return { models, faux };
-}
-
-/** The BRN failure code a control reported, or a description of what it did instead. */
-async function failureCode(action: () => Promise<unknown>): Promise<string> {
-	try {
-		await action();
-	} catch (error) {
-		return isBrnError(error) ? error.code : `unexpected: ${String(error)}`;
-	}
-	return "resolved";
-}
 
 /**
  * Proves the hosted conversation still sees no personal resources.
@@ -298,27 +57,7 @@ function expectNoAmbientResources(host: PiHost, home: string): void {
 
 test("real SDK keeps tools empty and reopens its own native result", async () => {
 	const fixture = await openPiTestRoot();
-	const faux = fauxProvider({
-		provider: "brn-test",
-		api: "brn-test",
-		models: [
-			{
-				id: "offline",
-				name: "Offline",
-				reasoning: false,
-				contextWindow: 32768,
-				maxTokens: 4096,
-			},
-		],
-	});
-	const models = await ModelRuntime.create({
-		credentials: new InMemoryCredentialStore(),
-		modelsPath: null,
-		allowModelNetwork: false,
-		refreshOnCreate: false,
-	});
-	models.registerNativeProvider(faux.provider);
-	await models.refresh({ allowNetwork: false });
+	const { models, faux } = await offlineModels();
 	faux.setResponses([fauxAssistantMessage("offline native result")]);
 	const host = await openPiRuntime({
 		root: fixture.root,
@@ -485,7 +224,7 @@ test("the model a conversation runs is read back, never echoed from the request"
 	const fixture = await openPiTestRoot();
 	// Two models, so "the one that was asked for" is a real choice rather than the
 	// only thing the catalog could possibly have seated.
-	const { models } = await offlineModels(32768, ["second"]);
+	const { models } = await offlineModels({ extraModelIds: ["second"] });
 	const host = await openPiRuntime({
 		root: fixture.root,
 		store: fixture.store,
@@ -675,7 +414,7 @@ test("an unknown context stays unknown and usage starts at zero", async () => {
 		cacheWrite: 0,
 		totalTokens: 0,
 	};
-	const unknown = await offlineModels(0);
+	const unknown = await offlineModels({ contextWindow: 0 });
 	const host = await openPiRuntime({
 		root: fixture.root,
 		store: fixture.store,
