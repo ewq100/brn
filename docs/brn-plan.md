@@ -549,6 +549,8 @@ Each capability leaves runnable checks for its behavior. J closes remaining gaps
 
 ### A. Launch the BRN service and terminal conversation client
 
+> **Design status (2026-09-09):** A concrete design and implementation plan for A are drafted at [docs/superpowers/specs/2026-09-09-brn-a-design.md](superpowers/specs/2026-09-09-brn-a-design.md) and [docs/superpowers/plans/2026-09-09-brn-a.md](superpowers/plans/2026-09-09-brn-a.md), with planning evidence in [docs/research/brn-a-planning-evidence.md](research/brn-a-planning-evidence.md). Awaiting technical-plan user review before implementation. Governing GitHub issues (#21, #27, #33, #40) are not yet reconciled; the parent owns those writes.
+
 Outcome: start an independent foreground BRN service, connect the terminal client, and complete a real conversation with the pinned SDK.
 
 Scope: minimal single-package TypeScript setup, documented service/client commands, authenticated loopback HTTP/SSE, direct SDK hosting, controlled resources, Pi credentials/sessions, and single-writer protection. The terminal supplies multiline input, streaming, readable tool status, cancellation, new/resume sessions, model selection, and context/usage display. Start with synthetic/disposable data and no model route to canonical mutation.
@@ -849,6 +851,7 @@ Do not resolve every future feature before starting. Settle only the choices nee
 
 - [x] Approve vault replacement, the strict canonical approval model, independent service ownership, terminal chat, database-backed writing state, and the delivery milestones.
 - [ ] Review this consolidated written design before writing an implementation plan.
+- [~] Decompose A into a concrete design and implementation plan drafted at `docs/superpowers/specs/2026-09-09-brn-a-design.md` and `docs/superpowers/plans/2026-09-09-brn-a.md`; awaiting technical-plan user review, with real-SDK evidence distinguished from fakes.
 - [ ] Separately authorize and amend the governing GitHub plan and affected decisions; link superseded issues to replacements.
 - [ ] Align the product specification and relevant glossary terms without turning the glossary into an implementation plan.
 - [ ] Decompose A against the actual checkout, with real-SDK evidence distinguished from fakes.
