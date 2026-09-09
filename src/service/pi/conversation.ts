@@ -79,6 +79,12 @@ type ActiveRun = {
 	readonly session: AgentSession;
 	readonly emit: (event: EngineEvent) => void;
 	cancelled: boolean;
+	/**
+	 * Settles when the run has finished — including its durability step — and
+	 * never rejects. `close()` waits on this, so a shutdown cannot cut a run
+	 * between the native abort and the sync that makes its result durable.
+	 */
+	settled: Promise<void> | undefined;
 };
 
 /** The conversation's cumulative token counters, as the SDK reports them. */
@@ -143,6 +149,31 @@ function visibleText(entry: AssistantEntry): string {
 		.join("");
 }
 
+/**
+ * Whether the provider's credentials are complete enough to run a request.
+ *
+ * This is the same gate the SDK applies inside `setModel`
+ * (`ModelRuntime.checkAuth(provider)`), asked before that call rather than
+ * inferred from its rejection: everything `setModel` does after the gate writes
+ * to the conversation, and a failure there is not a credential problem. The
+ * cheap synchronous snapshot is consulted first — a provider with no configured
+ * auth at all cannot pass the asynchronous check — and an auth resolution that
+ * fails outright is a refusal, not an outcome BRN can name any other way. No
+ * message from either predicate is republished.
+ */
+async function authorized(
+	session: AgentSession,
+	provider: string,
+): Promise<boolean> {
+	const runtime = session.modelRuntime;
+	try {
+		if (!runtime.hasConfiguredAuth(provider)) return false;
+		return (await runtime.checkAuth(provider)) !== undefined;
+	} catch {
+		return false;
+	}
+}
+
 class PiConversation implements ConversationEngine {
 	private readonly host: PiHost;
 	private active: ActiveRun | undefined;
@@ -180,8 +211,30 @@ class PiConversation implements ConversationEngine {
 		emit: (event: EngineEvent) => void,
 	): Promise<RunResult> {
 		const session = this.requireSession(command);
-		const run: ActiveRun = { session, emit, cancelled: false };
+		const run: ActiveRun = {
+			session,
+			emit,
+			cancelled: false,
+			settled: undefined,
+		};
 		this.active = run;
+		const running = this.execute(run, command);
+		// The handle `close()` waits on. It absorbs the outcome, so a rejected run
+		// is still awaited by a shutdown without that rejection escaping it — the
+		// caller of `run()` is the one that sees the failure.
+		run.settled = running.then(
+			() => undefined,
+			() => undefined,
+		);
+		return await running;
+	}
+
+	/** The run itself, held as a promise so `close()` can wait it out. */
+	private async execute(
+		run: ActiveRun,
+		command: PromptCommand,
+	): Promise<RunResult> {
+		const { session, emit } = run;
 		const baseline = entryIdsOf(session);
 		const before = totals(session);
 		const unsubscribe = this.host.subscribe((event) =>
@@ -261,11 +314,16 @@ class PiConversation implements ConversationEngine {
 	 * Stops driving the conversation.
 	 *
 	 * A run still in flight is asked to stop and waited out, so no provider
-	 * response is still arriving when the host is disposed. The host itself is
-	 * closed by whoever opened it.
+	 * response is still arriving when the host is disposed, and a run is never cut
+	 * between the native abort and the sync that makes its result durable. The
+	 * run's own failure belongs to its caller, so it is not re-raised here: the
+	 * teardown that follows this call must still happen. The host itself is closed
+	 * by whoever opened it.
 	 */
 	async close(): Promise<void> {
+		const run = this.active;
 		await this.cancel();
+		await run?.settled;
 	}
 
 	/** The hosted conversation, proven to be the one the command names. */
@@ -304,6 +362,9 @@ class PiConversation implements ConversationEngine {
 		if (bytes > MAX_PROMPT_BYTES) throw new BrnError("INPUT_TOO_LARGE");
 		const selected = session.model;
 		if (!selected) return "NO_MODEL";
+		if (!(await authorized(session, selected.provider))) {
+			return "AUTH_REQUIRED";
+		}
 		try {
 			await session.setModel(
 				{
@@ -314,10 +375,12 @@ class PiConversation implements ConversationEngine {
 			);
 		} catch (error) {
 			if (isBrnError(error)) throw error;
-			// The SDK validates the provider's credentials here and refuses without
-			// touching the conversation. Its message names the provider and is not
-			// republished.
-			return "AUTH_REQUIRED";
+			// Auth was decided above, against the same predicate the SDK gates on, so
+			// what is left here is the rest of `setModel`: recording the change in the
+			// conversation and notifying its extensions. A failure there is a
+			// persistence failure, not a credential problem, and the operator must not
+			// be told to re-authenticate over it.
+			throw new BrnError("STATE_UNAVAILABLE", "model_change");
 		}
 		return undefined;
 	}

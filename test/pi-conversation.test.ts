@@ -41,6 +41,25 @@ function promptFor(fixture: PiFixture, text: string): PromptCommand {
 	};
 }
 
+/**
+ * The hosted conversation behind a `PiHost` a test can override one method of.
+ * The SDK, the session and the provider stay the real ones.
+ */
+function delegate(host: PiHost): PiHost {
+	return {
+		snapshot: () => host.snapshot(),
+		models: () => host.models(),
+		sessions: () => host.sessions(),
+		create: (model) => host.create(model),
+		resume: (sessionId) => host.resume(sessionId),
+		selectModel: (model) => host.selectModel(model),
+		current: () => host.current(),
+		subscribe: (listener) => host.subscribe(listener),
+		syncCurrentSession: () => host.syncCurrentSession(),
+		close: () => host.close(),
+	};
+}
+
 /** A terminal message the provider ended for a specific reason. */
 function terminal(
 	text: string,
@@ -347,6 +366,115 @@ test("a preflight failure returns no result IDs and borrows no earlier answer", 
 	}
 });
 
+test("a persistence failure after the auth gate is not an auth refusal", async () => {
+	const fixture = await createPiFixture();
+	fixture.faux.setResponses([fauxAssistantMessage("never requested")]);
+	// Credentials are complete; the conversation's own record of the model change
+	// is what cannot be written. The SDK checks auth first and then writes, so this
+	// is exactly the failure an auth code would misreport.
+	const manager = fixture.host.current().sessionManager;
+	const append = vi
+		.spyOn(manager, "appendModelChange")
+		.mockImplementation(() => {
+			throw new Error("simulated session write failure");
+		});
+	const stream = vi.spyOn(fixture.modelRuntime, "streamSimple");
+	try {
+		expect(
+			await failureCode(() =>
+				fixture.engine.run(promptFor(fixture, "synthetic only"), () => {}),
+			),
+		).toBe("STATE_UNAVAILABLE");
+		expect(append).toHaveBeenCalled();
+		// The operator is not told to re-authenticate, and nothing was dispatched.
+		expect(stream).not.toHaveBeenCalled();
+		expect(fixture.faux.state.callCount).toBe(0);
+	} finally {
+		vi.restoreAllMocks();
+		await fixture.close();
+	}
+});
+
+test("close waits for an in-flight run to finish making its result durable", async () => {
+	const fixture = await createPiFixture({ tokensPerSecond: 40 });
+	const host = fixture.host;
+	let synced = false;
+	// A durability step that takes real time, so "close returned first" and "close
+	// waited" are distinguishable rather than a race.
+	const slowSync: PiHost = {
+		...delegate(host),
+		syncCurrentSession: async () => {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+			await host.syncCurrentSession();
+			synced = true;
+		},
+	};
+	const engine = createPiConversation(slowSync);
+	const answer =
+		"a long synthetic answer that is still arriving when the service is asked to stop, with enough words to arrive in several chunks";
+	fixture.faux.setResponses([fauxAssistantMessage(answer)]);
+	try {
+		let started = () => {};
+		const streaming = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		const running = engine.run(
+			promptFor(fixture, "synthetic only"),
+			(event) => {
+				if (event.type === "text") started();
+			},
+		);
+		await streaming;
+		await engine.close();
+		// close() returned only after the run's own durability step completed, so no
+		// run can be cut between the native abort and the sync.
+		expect(synced).toBe(true);
+		const result = await running;
+		expect(result.kind).toBe("cancelled");
+		expect(
+			fixture.store.sessionMetadata(fixture.session.id)?.materialized,
+		).toBe(true);
+	} finally {
+		await fixture.close();
+	}
+});
+
+test("a run that fails while close waits does not escape close", async () => {
+	const fixture = await createPiFixture({ tokensPerSecond: 40 });
+	const host = fixture.host;
+	const unsyncable: PiHost = {
+		...delegate(host),
+		syncCurrentSession: async () => {
+			throw new Error("simulated fsync failure");
+		},
+	};
+	const engine = createPiConversation(unsyncable);
+	fixture.faux.setResponses([
+		fauxAssistantMessage(
+			"a long synthetic answer that is still arriving when the service is asked to stop, with several chunks",
+		),
+	]);
+	try {
+		let started = () => {};
+		const streaming = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		const running = engine.run(
+			promptFor(fixture, "synthetic only"),
+			(event) => {
+				if (event.type === "text") started();
+			},
+		);
+		await streaming;
+		// The failure belongs to the caller of run(); teardown after close() must
+		// still happen, so close() itself resolves.
+		await expect(engine.close()).resolves.toBeUndefined();
+		expect(await failureCode(() => running)).toBe("STATE_UNAVAILABLE");
+	} finally {
+		await fixture.close();
+	}
+});
+
 test("each run references only its own answer, across repeated replacement", async () => {
 	const fixture = await createPiFixture();
 	try {
@@ -423,18 +551,10 @@ test("a native result BRN cannot make durable is not recorded as a success", asy
 	// Only BRN's own durability step fails. The SDK, the session and the provider
 	// are the real ones.
 	const unsyncable: PiHost = {
-		snapshot: () => host.snapshot(),
-		models: () => host.models(),
-		sessions: () => host.sessions(),
-		create: (model) => host.create(model),
-		resume: (sessionId) => host.resume(sessionId),
-		selectModel: (model) => host.selectModel(model),
-		current: () => host.current(),
-		subscribe: (listener) => host.subscribe(listener),
+		...delegate(host),
 		syncCurrentSession: async () => {
 			throw new Error("simulated fsync failure");
 		},
-		close: () => host.close(),
 	};
 	const engine = createPiConversation(unsyncable);
 	fixture.faux.setResponses([fauxAssistantMessage("answered but not durable")]);
