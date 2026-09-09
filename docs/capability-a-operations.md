@@ -103,6 +103,17 @@ belongs to the service. Stopping the **owner** with Ctrl+C or `SIGTERM` closes t
 listener, withdraws only its own discovery document, settles work and releases
 ownership last. It never deletes state.
 
+**`SIGTERM` waits for accepted work.** Closing the listener is immediate;
+shutdown then waits for the occupied operation to settle, because the operation
+stays occupied until the engine settles. Cancellation is requested at the 120-second
+deadline, and a provider that never settles can extend the wait past it. A shutdown
+that blocks on in-flight work is designed behaviour, not a defect.
+
+**`SIGKILL` is the safe escape.** The kernel releases the ownership lock when the
+process dies, the next start records the unsettled operation as `interrupted`, and
+nothing is replayed: no prompt is resubmitted and no answer is regenerated. Native
+session bytes already made durable stay durable.
+
 ## Credentials, and what BRN owns
 
 BRN reuses whatever provider credentials Pi already has, in Pi's own managed
@@ -151,8 +162,10 @@ as a digest, and a result as references to native session entries.
 
 Ownership is a kernel file lock, so a process that dies takes the lock with it and
 nobody has to guess whether a recorded PID is stale. A second service against the
-same directory exits with `ALREADY_RUNNING` before it opens anything writable —
-including while the owner is stopped with `SIGSTOP` and cannot answer for itself.
+same directory exits with `ALREADY_RUNNING`: it opens `writer.sqlite` read-write —
+that is how it discovers the lock — but it opens no *application* state and mutates
+no byte of the directory. That holds even while the owner is stopped with `SIGSTOP`
+and cannot answer for itself.
 
 ## Reading an outcome
 
@@ -206,8 +219,12 @@ or spends money, and none of them is something BRN will do for you:
 - pruning, vacuuming or compacting authoritative state automatically
 - setting `PRAGMA user_version` to make a refused ledger load
 
-A hung or unresponsive service is stopped with `SIGTERM` and inspected. If it
-will not exit, that is a defect to diagnose, not a state directory to clear.
+A hung or unresponsive service is stopped with `SIGTERM` and inspected. `SIGTERM`
+closes the listener and then waits for accepted work to settle, so a service with
+an unsettled run will not exit while it waits — that is the shutdown contract, not
+a defect. When the wait is unacceptable, `SIGKILL` it: the kernel releases the
+lock, the next start records the operation as `interrupted`, and nothing is
+replayed. Either way it is not a state directory to clear.
 
 ## Backup rehearsal: copying a stopped state directory
 

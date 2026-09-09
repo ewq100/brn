@@ -263,7 +263,9 @@ async function composeFaux(
 	context: { root: string; store: ServiceStore },
 	answer: string,
 ): Promise<{ composed: ComposedEngine; controller: Controller }> {
-	const { models, faux } = await offlineModels();
+	// Above BRN's own output ceiling, so a request the SDK makes proves the cap was
+	// applied rather than inherited from the model.
+	const { models, faux } = await offlineModels({ maxTokens: 8192 });
 	faux.setResponses(scripted(answer, false));
 	const host = await openPiRuntime({
 		root: context.root,

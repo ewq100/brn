@@ -450,6 +450,16 @@ test("submission rejects a malformed, oversized or unsupported body", async () =
 					body: JSON.stringify({ ...command, text: "\u00e9".repeat(16000) }),
 				},
 			},
+			{
+				name: "an oversize ASCII prompt",
+				status: 413,
+				options: {
+					// The common case: one byte per character, well past the prompt
+					// limit and well inside the body ceiling. It is too large, not
+					// malformed, so the operator is told to shorten it.
+					body: JSON.stringify({ ...command, text: "a".repeat(20000) }),
+				},
+			},
 		];
 		for (const testCase of cases) {
 			const response = await service.service.request(

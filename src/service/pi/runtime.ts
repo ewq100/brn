@@ -47,13 +47,6 @@ import { createControlledResourceLoader } from "./resources.ts";
 /** Model-catalog work is bounded: an unreachable provider must not hang a control. */
 const CATALOG_TIMEOUT_MS = 15_000;
 
-/**
- * No BRN conversation asks a provider for more than this in one response. It is
- * the shared wire-contract bound, so the limit the client discloses and the limit
- * the adapter applies cannot drift apart.
- */
-export const MAX_RESPONSE_TOKENS = MAX_OUTPUT_TOKENS;
-
 /** Compaction stays on, with the reserve BRN's conversations are sized for. */
 const COMPACTION = {
 	enabled: true,
@@ -458,7 +451,7 @@ class Host implements PiHost {
 		if (selected === undefined) throw new BrnError("MODEL_UNAVAILABLE");
 		return {
 			...selected,
-			maxTokens: Math.min(selected.maxTokens, MAX_RESPONSE_TOKENS),
+			maxTokens: Math.min(selected.maxTokens, MAX_OUTPUT_TOKENS),
 		};
 	}
 

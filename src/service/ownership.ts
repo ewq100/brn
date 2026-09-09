@@ -1,9 +1,10 @@
 import type { Stats } from "node:fs";
 import { constants } from "node:fs";
 import { type FileHandle, lstat, mkdir, open } from "node:fs/promises";
-import { dirname, isAbsolute, join, normalize, sep } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { BrnError } from "../core/errors.ts";
 import { errnoOf, MANAGED_FILE_MODE } from "../core/fs.ts";
+import { invalidStateDir, requireAbsoluteStateDir } from "../core/state-dir.ts";
 import { syncDirectory } from "./fs.ts";
 import { openDatabase } from "./sqlite.ts";
 
@@ -35,14 +36,7 @@ function isSqliteBusy(error: unknown): boolean {
 }
 
 function invalid(reason: string): BrnError {
-	return new BrnError("INVALID_STATE_DIR", reason);
-}
-
-/** Rejects a path that is not an already-normalised absolute path. */
-export function requireAbsoluteStateDir(path: string): string {
-	if (!isAbsolute(path) || normalize(path) !== path)
-		throw invalid("not_absolute");
-	return path;
+	return invalidStateDir(reason);
 }
 
 /** Every path prefix of `path`, from the filesystem root inwards. */

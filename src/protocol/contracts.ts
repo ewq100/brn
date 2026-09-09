@@ -15,7 +15,15 @@
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 
-/** The maximum prompt BRN accepts, in UTF-8 bytes. Checked after schema validation. */
+/**
+ * The maximum prompt BRN accepts, in UTF-8 bytes.
+ *
+ * It is not the schema's `maxLength`: a character bound cannot express a byte
+ * bound, and if the schema rejected an oversize prompt first, a long ASCII
+ * prompt would be reported as a malformed request instead of one that is too
+ * large. The explicit byte check owns every size refusal, so `text` is bounded
+ * only by what the body ceiling could have delivered.
+ */
 export const MAX_PROMPT_BYTES = 16384;
 
 /**
@@ -54,7 +62,11 @@ export const PromptSchema = Type.Object(
 		}),
 		sessionId: Type.String({ minLength: 1, maxLength: MAX_SESSION_ID_LENGTH }),
 		model: ModelIdSchema,
-		text: Type.String({ minLength: 1, maxLength: MAX_PROMPT_BYTES }),
+		/**
+		 * Bounded by the body ceiling, not by the prompt limit: the UTF-8 byte
+		 * check in the route reports every oversize prompt as too large.
+		 */
+		text: Type.String({ minLength: 1, maxLength: MAX_BODY_BYTES }),
 	},
 	{ additionalProperties: false },
 );

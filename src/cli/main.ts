@@ -1,7 +1,8 @@
 import { BrnError } from "../core/errors.ts";
 // The absolute-state-directory rule has one definition, shared with the service
-// so a client cannot be pointed at a directory the service would refuse.
-import { requireAbsoluteStateDir } from "../service/ownership.ts";
+// so a client cannot be pointed at a directory the service would refuse. It
+// lives in `core` so asking the question pulls in no service internal.
+import { requireAbsoluteStateDir } from "../core/state-dir.ts";
 import { type Client, connect } from "./client.ts";
 import { describeFailure, runCommand } from "./commands.ts";
 import { runTerminal } from "./terminal.ts";

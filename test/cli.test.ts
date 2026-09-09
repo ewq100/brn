@@ -1,8 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdtemp, realpath, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	mkdtemp,
+	readFile,
+	realpath,
+	writeFile,
+} from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { expect, test } from "vitest";
 import { connect } from "../src/cli/client.ts";
 import {
@@ -14,6 +20,34 @@ import type { PromptCommand } from "../src/core/conversation.ts";
 import { BrnError, isBrnError } from "../src/core/errors.ts";
 import { HealthSchema } from "../src/protocol/contracts.ts";
 import { runCli, spawnServiceWithFake } from "./support/process.ts";
+
+/** Every module the CLI entry point statically reaches, as absolute paths. */
+async function staticImportGraph(entry: string): Promise<string[]> {
+	const seen = new Set<string>();
+	const pending = [resolve(entry)];
+	while (pending.length > 0) {
+		const file = pending.pop() as string;
+		if (seen.has(file)) continue;
+		seen.add(file);
+		const source = await readFile(file, "utf8");
+		for (const match of source.matchAll(/from\s+"(\.[^"]+)"/g)) {
+			pending.push(resolve(dirname(file), match[1] as string));
+		}
+	}
+	return [...seen];
+}
+
+/**
+ * A `brn` invocation must not load the SQLite binding or the lock-acquisition
+ * code it may never call, so no client module may reach into `src/service/`.
+ */
+test("the CLI's static import graph contains no service module", async () => {
+	const graph = await staticImportGraph("src/cli/main.ts");
+	expect(graph.filter((file) => file.includes("/src/service/"))).toEqual([]);
+	expect(graph.some((file) => file.endsWith("/src/core/state-dir.ts"))).toBe(
+		true,
+	);
+});
 
 /**
  * Collects what a command wrote, so a case can assert on the whole rendered

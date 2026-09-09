@@ -45,11 +45,12 @@ import type {
 	Usage,
 } from "../../core/conversation.ts";
 import { BrnError, isBrnError } from "../../core/errors.ts";
+import {
+	MAX_OUTPUT_TOKENS,
+	MAX_PROMPT_BYTES,
+} from "../../protocol/contracts.ts";
 import { logInfo } from "../log.ts";
-import { MAX_RESPONSE_TOKENS, type PiHost } from "./runtime.ts";
-
-/** The largest prompt BRN accepts, in UTF-8 bytes rather than characters. */
-const MAX_PROMPT_BYTES = 16 * 1024;
+import type { PiHost } from "./runtime.ts";
 
 /** A native assistant entry: the only kind of entry a result may reference. */
 type AssistantEntry = {
@@ -369,7 +370,7 @@ class PiConversation implements ConversationEngine {
 			await session.setModel(
 				{
 					...selected,
-					maxTokens: Math.min(selected.maxTokens, MAX_RESPONSE_TOKENS),
+					maxTokens: Math.min(selected.maxTokens, MAX_OUTPUT_TOKENS),
 				},
 				{ persist: false },
 			);

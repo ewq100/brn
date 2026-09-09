@@ -9,14 +9,63 @@ import {
 	symlink,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { expect, test } from "vitest";
+import { isBrnError } from "../src/core/errors.ts";
+import { requireAbsoluteStateDir } from "../src/core/state-dir.ts";
 import { proveFts5 } from "../src/service/sqlite.ts";
 import { spawnService } from "./support/process.ts";
 
 async function makeRoot(prefix: string): Promise<string> {
 	return await mkdtemp(join(await realpath(tmpdir()), prefix));
 }
+
+/**
+ * The rule lives in `core`, which imports no Node module, so it is written
+ * against the path text. This pins it to the POSIX `node:path` behaviour it
+ * replaced: an accepted path is exactly one `normalize` leaves unchanged.
+ */
+test("the state-directory rule accepts exactly the normalised absolute paths", () => {
+	const cases = [
+		"/",
+		"/var/lib/brn",
+		"/a",
+		"/a b/c",
+		"/a.b/c..d",
+		"/a/..b",
+		"relative",
+		"",
+		"./a",
+		"../a",
+		"/a/",
+		"/a/b/",
+		"//",
+		"///",
+		"/a//",
+		"/a///",
+		"/a//b",
+		"//a",
+		"/a/./b",
+		"/a/../b",
+		"/a/..",
+		"/.",
+		"/./",
+	];
+	const decide = (path: string): string => {
+		try {
+			return `accepted ${requireAbsoluteStateDir(path)}`;
+		} catch (error) {
+			return isBrnError(error)
+				? `${error.code}: ${error.detail}`
+				: "unexpected";
+		}
+	};
+	const reference = (path: string): string =>
+		posix.isAbsolute(path) && posix.normalize(path) === path
+			? `accepted ${path}`
+			: "INVALID_STATE_DIR: not_absolute";
+	expect(cases.map(decide)).toEqual(cases.map(reference));
+});
 
 test("a live but stopped owner prevents a second writer", async () => {
 	const root = await makeRoot("brn-owner-");

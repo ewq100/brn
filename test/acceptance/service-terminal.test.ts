@@ -34,6 +34,7 @@ import { failureCode, failureStatus } from "../../src/cli/commands.ts";
 import { decodeSse } from "../../src/cli/sse.ts";
 import type { ModelId, PromptCommand } from "../../src/core/conversation.ts";
 import {
+	MAX_OUTPUT_TOKENS,
 	MAX_PROMPT_BYTES,
 	ModelsResponseSchema,
 	OperationSchema,
@@ -41,7 +42,6 @@ import {
 	SnapshotSchema,
 	type StreamEvent,
 } from "../../src/protocol/contracts.ts";
-import { MAX_RESPONSE_TOKENS } from "../../src/service/pi/runtime.ts";
 import { openDatabase } from "../../src/service/sqlite.ts";
 import { FAKE_MODEL, FAKE_SESSION_ID } from "../support/fake-engine.ts";
 import {
@@ -227,7 +227,13 @@ async function startAcceptanceScenario(
 	async function spawn(pauseAt: Failpoint | undefined): Promise<ServiceHandle> {
 		return await spawnService(root, {
 			...(engine === "fake"
-				? { fakeEngine: true }
+				? {
+						fakeEngine: true,
+						// Even a fake-engine child gets the planted home and no inherited
+						// credential: the offline claim covers every journey, not only the
+						// ones that drive the real SDK.
+						env: isolatedChildEnvironment(home),
+					}
 				: {
 						piFauxProvider: true,
 						answer,
@@ -684,9 +690,12 @@ test("an unsettled abort keeps every session, model and prompt write busy", asyn
 test("startup refuses a corrupt ledger without deleting or rebuilding it", async () => {
 	const base = await makeBase();
 	const root = join(base, "state");
+	const home = join(base, "home");
 	await mkdir(root, { mode: 0o700 });
+	await mkdir(home, { mode: 0o700 });
+	const env = isolatedChildEnvironment(home);
 	try {
-		const first = await spawnService(root, { fakeEngine: true });
+		const first = await spawnService(root, { fakeEngine: true, env });
 		await first.close();
 		const ledger = join(root, "operations.sqlite");
 		const bytes = await readFile(ledger);
@@ -699,6 +708,7 @@ test("startup refuses a corrupt ledger without deleting or rebuilding it", async
 		const refused = await spawnService(root, {
 			fakeEngine: true,
 			expectReady: false,
+			env,
 		});
 		expect(await refused.exit).not.toBe(0);
 		expect(refused.output()).toContain("STATE_CORRUPT");
@@ -713,9 +723,12 @@ test("startup refuses a corrupt ledger without deleting or rebuilding it", async
 test("startup refuses a ledger written by a newer BRN without touching its bytes", async () => {
 	const base = await makeBase();
 	const root = join(base, "state");
+	const home = join(base, "home");
 	await mkdir(root, { mode: 0o700 });
+	await mkdir(home, { mode: 0o700 });
+	const env = isolatedChildEnvironment(home);
 	try {
-		const first = await spawnService(root, { fakeEngine: true });
+		const first = await spawnService(root, { fakeEngine: true, env });
 		await first.close();
 		const ledger = join(root, "operations.sqlite");
 		const database = openDatabase(ledger);
@@ -726,6 +739,7 @@ test("startup refuses a ledger written by a newer BRN without touching its bytes
 		const refused = await spawnService(root, {
 			fakeEngine: true,
 			expectReady: false,
+			env,
 		});
 		expect(await refused.exit).not.toBe(0);
 		// A version mismatch is its own report, not "corrupt", and never a downgrade.
@@ -810,11 +824,15 @@ test("poisoned ambient configuration reaches neither the request nor the process
 
 		const request = scenario.providerRequests().at(0);
 		expect(request).toBeDefined();
-		// No tool, no personal instruction, and BRN's own output ceiling.
+		// No tool, no personal instruction, and BRN's own output ceiling — which is
+		// below the faux model's own 8192, so the cap is what produced this value.
 		expect(request?.toolNames).toEqual([]);
 		expect(request?.systemPromptHasSentinel).toBe(false);
 		expect(request?.messagesHaveSentinel).toBe(false);
-		expect(request?.maxTokens).toBeLessThanOrEqual(MAX_RESPONSE_TOKENS);
+		expect(request?.maxTokens).toBe(MAX_OUTPUT_TOKENS);
+		// The model asked for is the model that was seated, not a personal default.
+		expect(request?.provider).toBe(OFFLINE_MODEL.provider);
+		expect(request?.model).toBe(OFFLINE_MODEL.id);
 		// The planted extension writes a file if it is ever loaded and run.
 		expect(existsSync(extensionMarker(scenario.home))).toBe(false);
 		expect(scenario.service.output()).not.toContain(SENTINEL);
@@ -878,7 +896,7 @@ test("the client discloses the seated identity and the operating limits before a
 			`${OFFLINE_MODEL.provider}/${OFFLINE_MODEL.id}`,
 		);
 		expect(status.output).toContain(`prompt ${MAX_PROMPT_BYTES} bytes`);
-		expect(status.output).toContain(`response ${MAX_RESPONSE_TOKENS} tokens`);
+		expect(status.output).toContain(`response ${MAX_OUTPUT_TOKENS} tokens`);
 		expect(status.output).toContain("one operation at a time");
 		expect(status.output).toContain(
 			"A context window is not a spending limit.",

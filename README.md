@@ -81,6 +81,10 @@ and the service rejects any request with a wrong `Host`, a duplicated `Host` or
 panel, and no filesystem completion. Enter submits; the editor's newline binding
 (Shift+Enter, or Ctrl+J) inserts a line, and bracketed paste works as usual.
 
+The editor trims the text it submits, so leading and trailing whitespace cannot be
+sent from the interactive client; interior newlines and indentation survive. Use
+`prompt --text TEXT` when the surrounding whitespace itself matters.
+
 Typed text is never lost to a refusal. The editor is cleared only once the
 service has acknowledged a submission, so a busy rejection, an oversized prompt
 or a session that changed underneath you leaves your text where it was. If the
