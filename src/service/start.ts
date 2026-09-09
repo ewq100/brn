@@ -4,12 +4,15 @@ import { open, rename, rm, unlink } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
+import type { OperationStore } from "../core/conversation.ts";
 import { errnoOf, MANAGED_FILE_MODE } from "../core/fs.ts";
 import { syncDirectory } from "./fs.ts";
 import { createRequestHandler } from "./http.ts";
 import { logError, logInfo } from "./log.ts";
+import { openOperationStore } from "./operation-store.ts";
 import {
 	acquireOwnership,
+	createOrValidateManagedFile,
 	type Ownership,
 	requireSafeManagedFile,
 } from "./ownership.ts";
@@ -19,6 +22,7 @@ import { proveFts5 } from "./sqlite.ts";
 const BIND_ADDRESS = "127.0.0.1";
 const DISCOVERY_FILE = "discovery.json";
 const DISCOVERY_TEMP_FILE = "discovery.json.tmp";
+const OPERATIONS_DATABASE = "operations.sqlite";
 const TOKEN_BYTES = 32;
 
 const HEADERS_TIMEOUT_MS = 10_000;
@@ -151,6 +155,10 @@ async function withdrawDiscovery(
  * The order is deliberate. The umask is tightened before any file exists,
  * ownership is acquired before any writable resource is opened, and discovery is
  * published last so a client can never attach to a half-initialised instance.
+ *
+ * The operation ledger opens only after ownership succeeds, and any operation it
+ * finds unfinished is reported as interrupted. A restart never replays a provider
+ * request: recovery records what was lost and stops there.
  */
 export async function startService(options: {
 	stateDir: string;
@@ -159,6 +167,26 @@ export async function startService(options: {
 	proveFts5();
 
 	const ownership: Ownership = await acquireOwnership(options.stateDir);
+	let store: OperationStore;
+	try {
+		const operationsPath = join(ownership.root, OPERATIONS_DATABASE);
+		await createOrValidateManagedFile(operationsPath);
+		store = openOperationStore(operationsPath);
+	} catch (error) {
+		ownership.release();
+		throw error;
+	}
+	try {
+		const interrupted = store.interruptUnfinished();
+		if (interrupted > 0) {
+			logInfo("service.operations_interrupted", { count: interrupted });
+		}
+	} catch (error) {
+		store.close();
+		ownership.release();
+		throw error;
+	}
+
 	const instanceId = randomUUID();
 	const token = randomBytes(TOKEN_BYTES).toString("base64url");
 	let expected = { host: "", token };
@@ -193,6 +221,7 @@ export async function startService(options: {
 		ready = false;
 		server.close();
 		server.closeAllConnections();
+		store.close();
 		ownership.release();
 		throw error;
 	}
@@ -213,7 +242,13 @@ export async function startService(options: {
 				});
 				await withdrawDiscovery(ownership.root, instanceId);
 			} finally {
-				ownership.release();
+				// Shutdown reverses startup: the ledger closes before ownership is
+				// released, so no second writer can appear while it is still open.
+				try {
+					store.close();
+				} finally {
+					ownership.release();
+				}
 			}
 		},
 	};

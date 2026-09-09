@@ -31,7 +31,27 @@ export type BrnErrorCode =
 	/** The service answered with a body that does not match the expected schema. */
 	| "INVALID_RESPONSE"
 	/** The CLI does not implement the requested command. */
-	| "UNSUPPORTED_COMMAND";
+	| "UNSUPPORTED_COMMAND"
+	/** An accepted operation or a session/model change already occupies the service. */
+	| "BUSY"
+	/** The service is shutting down and accepts no new work. */
+	| "SERVICE_STOPPING"
+	/** The submitted session is not the conversation the service is hosting. */
+	| "SESSION_MISMATCH"
+	/** The submitted model is not the one selected for the hosted session. */
+	| "MODEL_MISMATCH"
+	/** The request ID belongs to an earlier operation with a different payload. */
+	| "REQUEST_ID_REUSED"
+	/** No operation with the given ID exists in the ledger. */
+	| "UNKNOWN_OPERATION"
+	/** The ledger refused a state change because the recorded state moved on. */
+	| "OPERATION_CONFLICT"
+	/** Authoritative state failed a structural check. It is never deleted or rebuilt. */
+	| "STATE_CORRUPT"
+	/** Authoritative state was written by a newer BRN and cannot be downgraded. */
+	| "STATE_VERSION_UNSUPPORTED"
+	/** A write to authoritative state failed, so no further mutation is attempted. */
+	| "STATE_UNAVAILABLE";
 
 /**
  * A failure identified by a fixed code.
