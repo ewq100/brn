@@ -163,6 +163,11 @@ class Host implements PiHost {
 	private unsubscribe: (() => void) | undefined;
 	/** Set when a replacement failed, so the fixed error names the reason. */
 	private replacementFailed = false;
+	/**
+	 * The identity the factory last resolved, so a construction can be checked
+	 * against what it asked the SDK to seat rather than against a hope.
+	 */
+	private resolvedIdentity: ModelId | undefined;
 	private closed = false;
 
 	constructor(parts: {
@@ -232,9 +237,13 @@ class Host implements PiHost {
 		const id = manager.getSessionId();
 		this.store.rememberSession(id, requested, false);
 		await this.replaceRuntime(manager);
+		// The identity BRN records and returns is the one the conversation is
+		// actually running, read back off the session, not the one asked for.
+		const seated = this.seatedIdentity();
+		this.store.rememberSession(id, seated, false);
 		this.store.setActiveSession(id);
-		this.store.setDefaultModel(requested);
-		return { id, model: requested };
+		this.store.setDefaultModel(seated);
+		return { id, model: seated };
 	}
 
 	async resume(sessionId: string): Promise<SessionInfo> {
@@ -376,6 +385,7 @@ class Host implements PiHost {
 		sessionStartEvent,
 	}) => {
 		const model = await this.resolveExactModel(sessionManager);
+		this.resolvedIdentity = { provider: model.provider, id: model.id };
 		const result = await createAgentSession({
 			cwd,
 			agentDir,
@@ -466,6 +476,7 @@ class Host implements PiHost {
 			return;
 		}
 		try {
+			this.resolvedIdentity = undefined;
 			const { cancelled } = await runtime.switchSession(path);
 			if (cancelled) throw new BrnError("SESSION_UNAVAILABLE", "cancelled");
 		} catch (error) {
@@ -479,6 +490,8 @@ class Host implements PiHost {
 			this.replacementFailed = true;
 			throw new BrnError("SESSION_UNAVAILABLE", "identity");
 		}
+		// `switchSession` is factory construction too: the same seating gate applies.
+		await this.requireExactSeating(runtime);
 	}
 
 	/**
@@ -491,12 +504,14 @@ class Host implements PiHost {
 	private async replaceRuntime(manager: SessionManager): Promise<void> {
 		await this.settle();
 		try {
+			this.resolvedIdentity = undefined;
 			const next = await createAgentSessionRuntime(this.factory, {
 				cwd: this.workDir,
 				agentDir: this.root,
 				sessionManager: manager,
 			});
 			this.runtime = next;
+			await this.requireExactSeating(next);
 			next.setRebindSession(this.rebind);
 			await this.rebind(next.session);
 			this.replacementFailed = false;
@@ -505,6 +520,43 @@ class Host implements PiHost {
 			this.replacementFailed = true;
 			throw error;
 		}
+	}
+
+	/**
+	 * The last gate on "never silently fall back".
+	 *
+	 * `requireAvailable` proves the model exists before construction; this proves
+	 * the conversation the SDK handed back is running that exact model. The SDK
+	 * reports its own substitution through `modelFallbackMessage`, so a non-empty
+	 * one is a refusal even when the identities happen to agree. A refused seating
+	 * is torn down through the same settle-and-dispose path every other failure
+	 * uses, so no disposed `AgentSession` is left advertised as active.
+	 */
+	private async requireExactSeating(next: AgentSessionRuntime): Promise<void> {
+		const expected = this.resolvedIdentity;
+		const seated = modelIdentity(next.session.model);
+		const fallback = next.modelFallbackMessage;
+		const reason =
+			fallback !== undefined && fallback.length > 0
+				? "model_fallback"
+				: expected === undefined
+					? "unresolved_model"
+					: seated === null ||
+							seated.provider !== expected.provider ||
+							seated.id !== expected.id
+						? "model_identity"
+						: undefined;
+		if (reason === undefined) return;
+		await this.settle();
+		this.replacementFailed = true;
+		throw new BrnError("MODEL_UNAVAILABLE", reason);
+	}
+
+	/** The identity the hosted conversation is actually running. */
+	private seatedIdentity(): ModelId {
+		const seated = modelIdentity(this.current().model);
+		if (seated === null) throw new BrnError("MODEL_UNAVAILABLE", "unseated");
+		return seated;
 	}
 
 	/** Settles and disposes the hosted conversation, if there is one. */

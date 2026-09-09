@@ -27,7 +27,7 @@ import {
 	InMemoryCredentialStore,
 } from "@earendil-works/pi-ai";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { expect, test } from "vitest";
 import { isBrnError } from "../src/core/errors.ts";
 import {
@@ -41,9 +41,12 @@ import { openPiRuntime, type PiHost } from "../src/service/pi/runtime.ts";
 const SENTINEL = "BRN_AMBIENT_SENTINEL";
 
 const OFFLINE_MODEL = { provider: "brn-test", id: "offline" };
+const SECOND_MODEL = { provider: "brn-test", id: "second" };
 
 type PiTestRoot = {
 	root: string;
+	/** The fake home the fixture points `HOME` at, so Pi's own agent dir lands here. */
+	home: string;
 	store: ServiceStore;
 	close(): Promise<void>;
 };
@@ -168,6 +171,30 @@ async function plantAmbientResources(
 		`---\nname: ${SENTINEL}\ndescription: ${SENTINEL}\n---\n\n${SENTINEL}\n`,
 	);
 	await writeFile(join(agentDir, "prompts", "sentinel.md"), `${SENTINEL}\n`);
+	// A personal model catalog. The production model runtime is configured with
+	// `modelsPath: null`, so this must never become an offered model.
+	await writeFile(
+		join(agentDir, "models.json"),
+		`${JSON.stringify({
+			providers: {
+				[SENTINEL]: {
+					name: SENTINEL,
+					api: "openai-completions",
+					baseUrl: "https://sentinel.invalid/v1",
+					apiKey: SENTINEL,
+					models: [
+						{
+							id: SENTINEL,
+							name: SENTINEL,
+							reasoning: false,
+							contextWindow: 32768,
+							maxTokens: 4096,
+						},
+					],
+				},
+			},
+		})}\n`,
+	);
 	await writeFile(join(agentDir, "extensions", "sentinel.js"), extension);
 	await writeFile(join(work, ".pi", "extensions", "sentinel.js"), extension);
 }
@@ -193,6 +220,7 @@ async function openPiTestRoot(): Promise<PiTestRoot> {
 	const store = openOperationStore(databasePath);
 	return {
 		root,
+		home,
 		store,
 		async close() {
 			store.close();
@@ -206,19 +234,18 @@ async function openPiTestRoot(): Promise<PiTestRoot> {
 /** The offline model runtime every test drives the real SDK with. */
 async function offlineModels(
 	contextWindow = 32768,
+	extraModelIds: readonly string[] = [],
 ): Promise<{ models: ModelRuntime; faux: ReturnType<typeof fauxProvider> }> {
 	const faux = fauxProvider({
 		provider: "brn-test",
 		api: "brn-test",
-		models: [
-			{
-				id: "offline",
-				name: "Offline",
-				reasoning: false,
-				contextWindow,
-				maxTokens: 4096,
-			},
-		],
+		models: ["offline", ...extraModelIds].map((id) => ({
+			id,
+			name: id,
+			reasoning: false,
+			contextWindow,
+			maxTokens: 4096,
+		})),
 	});
 	const models = await ModelRuntime.create({
 		credentials: new InMemoryCredentialStore(),
@@ -448,6 +475,48 @@ test("an unavailable model is refused instead of silently substituted", async ()
 		expect(host.current().sessionId).toBe(created.id);
 		expect(host.current().model?.id).toBe("offline");
 		expect(fixture.store.getDefaultModel()).toEqual(OFFLINE_MODEL);
+	} finally {
+		await host.close();
+		await fixture.close();
+	}
+});
+
+test("the model a conversation runs is read back, never echoed from the request", async () => {
+	const fixture = await openPiTestRoot();
+	// Two models, so "the one that was asked for" is a real choice rather than the
+	// only thing the catalog could possibly have seated.
+	const { models } = await offlineModels(32768, ["second"]);
+	const host = await openPiRuntime({
+		root: fixture.root,
+		store: fixture.store,
+		modelRuntime: models,
+	});
+	try {
+		const offered = await host.models();
+		expect(offered).toContainEqual(OFFLINE_MODEL);
+		expect(offered).toContainEqual(SECOND_MODEL);
+
+		// Every identity BRN reports and records comes off the seated session, and
+		// the seating gate refuses the construction unless it is the exact one
+		// resolved for it.
+		const created = await host.create(SECOND_MODEL);
+		expect(created.model).toEqual(SECOND_MODEL);
+		expect(host.current().model?.id).toBe("second");
+		expect(host.snapshot().session).toEqual({
+			id: created.id,
+			model: SECOND_MODEL,
+		});
+		expect(fixture.store.sessionMetadata(created.id)).toEqual({
+			model: SECOND_MODEL,
+			materialized: false,
+		});
+		expect(fixture.store.getDefaultModel()).toEqual(SECOND_MODEL);
+
+		// The replacement path is gated the same way: a resume that seated the
+		// other model would be refused rather than reported as this one.
+		const resumed = await host.resume(created.id);
+		expect(resumed).toEqual({ id: created.id, model: SECOND_MODEL });
+		expect(host.current().model?.id).toBe("second");
 	} finally {
 		await host.close();
 		await fixture.close();
@@ -688,6 +757,57 @@ test("closing the host disposes the conversation and stops its events", async ()
 		// Closing twice is how shutdown after a failed start behaves.
 		await host.close();
 	} finally {
+		await fixture.close();
+	}
+});
+
+test("the production model runtime reaches no ambient catalog and no network", async () => {
+	const fixture = await openPiTestRoot();
+	// Pi resolves its own agent directory from HOME, which the fixture points at
+	// its temporary tree: the real credential file is not on any path taken here.
+	expect(getAgentDir()).toBe(join(fixture.home, ".pi", "agent"));
+	expect(existsSync(join(fixture.home, ".pi", "agent", "models.json"))).toBe(
+		true,
+	);
+	const blocked = globalThis.fetch;
+	let attempts = 0;
+	globalThis.fetch = ((...args: Parameters<typeof fetch>) => {
+		attempts += 1;
+		return blocked(...args);
+	}) as typeof globalThis.fetch;
+	try {
+		// No `modelRuntime`: this is the production construction path, the one that
+		// configures `modelsPath: null` and Pi's own `auth.json`.
+		const host = await openPiRuntime({
+			root: fixture.root,
+			store: fixture.store,
+		});
+		try {
+			// The planted personal models.json offers a sentinel model. Nothing does.
+			expect(await host.models()).toEqual([]);
+			expect(host.snapshot()).toEqual({
+				session: null,
+				context: null,
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+				},
+			});
+			expect(await host.sessions()).toEqual([]);
+			// A models store beside the personal catalog would mean a file-backed
+			// catalog was configured after all.
+			expect(
+				existsSync(join(fixture.home, ".pi", "agent", "models-store.json")),
+			).toBe(false);
+			expect(attempts).toBe(0);
+		} finally {
+			await host.close();
+		}
+	} finally {
+		globalThis.fetch = blocked;
 		await fixture.close();
 	}
 });
