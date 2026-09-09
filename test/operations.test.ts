@@ -52,7 +52,7 @@ function deferred(): Deferred {
 /** Wraps a real ledger so one committed write fails the way a full disk would. */
 function storeFailingAt(
 	store: OperationStore,
-	method: "insert" | "finish",
+	method: "insert" | "transition" | "finish",
 	failure: Error,
 ): OperationStore {
 	return {
@@ -61,9 +61,33 @@ function storeFailingAt(
 			if (method === "insert") throw failure;
 			return store.insert(command, requestHash);
 		},
-		transition: (id, from, to) => store.transition(id, from, to),
+		transition: (id, from, to) => {
+			if (method === "transition") throw failure;
+			return store.transition(id, from, to);
+		},
 		finish: (id, result, failureCode) => {
 			if (method === "finish") throw failure;
+			return failureCode === undefined
+				? store.finish(id, result)
+				: store.finish(id, result, failureCode);
+		},
+		interruptUnfinished: () => store.interruptUnfinished(),
+		latest: () => store.latest(),
+		close: () => store.close(),
+	};
+}
+
+/** Wraps a real ledger and counts the outcomes it was asked to commit. */
+function storeCountingFinish(
+	store: OperationStore,
+	count: { finishes: number },
+): OperationStore {
+	return {
+		find: (id) => store.find(id),
+		insert: (command, requestHash) => store.insert(command, requestHash),
+		transition: (id, from, to) => store.transition(id, from, to),
+		finish: (id, result, failureCode) => {
+			count.finishes += 1;
 			return failureCode === undefined
 				? store.finish(id, result)
 				: store.finish(id, result, failureCode);
@@ -346,6 +370,38 @@ test("an admission that cannot be committed never reaches the engine", async () 
 	store.close();
 });
 
+test("an admission that cannot start releases the seat", async () => {
+	const store = openOperationStore(":memory:");
+	const failing = storeFailingAt(
+		store,
+		"transition",
+		new BrnError("STATE_UNAVAILABLE"),
+	);
+	const engine = new FakeEngine();
+	const operations = createOperations({
+		store: failing,
+		engine,
+		onChange: () => {},
+	});
+	expect(() => operations.submit(prompt(), "digest-a")).toThrow(
+		"STATE_UNAVAILABLE",
+	);
+	// No run was started, so no settlement will ever release the seat.
+	expect(engine.calls).toHaveLength(0);
+	// The seat is free: a control does not touch the ledger, so if the coordinator
+	// still held the operation this would refuse with a phantom `BUSY` and keep
+	// refusing until the process restarts.
+	expect(await operations.control(async () => "switched")).toBe("switched");
+	// The durably accepted row still holds the ledger's own seat and is recovered
+	// as interrupted by the next start.
+	expect(store.latest()?.state).toBe("accepted");
+	// A retry of the same request resolves to that row rather than reporting busy.
+	expect(operations.submit(prompt(), "digest-a").state).toBe("accepted");
+	expect(engine.calls).toHaveLength(0);
+	await operations.stop();
+	store.close();
+});
+
 test("a completion that cannot be committed keeps the operation occupied", async () => {
 	const store = openOperationStore(":memory:");
 	const failing = storeFailingAt(store, "finish", new Error("commit lost"));
@@ -364,34 +420,103 @@ test("a completion that cannot be committed keeps the operation occupied", async
 	expect(() =>
 		operations.submit(prompt({ requestId: SECOND_ID }), "b"),
 	).toThrow("BUSY");
-	await operations.stop();
+	// The lost write is recorded nowhere, so shutdown must not be the place it
+	// disappears: it reaches the process owner's error handler.
+	await expect(operations.stop()).rejects.toThrow("commit lost");
+	expect(operations.view().accepting).toBe(false);
 	store.close();
 });
 
-test("a late completion signal changes nothing", async () => {
+test("a duplicate completion signal commits no second outcome", async () => {
 	const store = openOperationStore(":memory:");
+	const count = { finishes: 0 };
 	const engine = new FakeEngine();
-	const operations = createOperations({ store, engine, onChange: () => {} });
+	const operations = createOperations({
+		store: storeCountingFinish(store, count),
+		engine,
+		onChange: () => {},
+	});
 	const accepted = operations.submit(prompt(), "digest-a");
+	// Held before the run settles, so the second signal below comes from the run's
+	// own handle rather than from a control the fake could no-op away.
+	const handles = engine.handles();
 	engine.complete("one");
 	await operations.waitForIdle();
-	engine.complete("two");
+	const settled = store.find(accepted.id);
+	expect(settled?.state).toBe("succeeded");
+	expect(count.finishes).toBe(1);
+
+	// The engine reports the same run as completed a second time, with a different
+	// answer. Nothing about the recorded operation may move.
+	handles.settle({
+		kind: "completed",
+		entryIds: ["entry-99"],
+		truncated: true,
+		usage: {
+			input: 9,
+			output: 9,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 18,
+		},
+	});
 	await delay(1);
-	const record = store.find(accepted.id);
-	expect(record?.state).toBe("succeeded");
-	expect(record?.result).toEqual({
+	expect(store.find(accepted.id)).toEqual(settled);
+	expect(store.find(accepted.id)?.result).toEqual({
 		kind: "completed",
 		entryIds: ["entry-1"],
 		truncated: false,
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
 	});
+	// No second outcome was even attempted, so a lost-write latch cannot be tripped
+	// by a chatty engine.
+	expect(count.finishes).toBe(1);
 	// Admission was released exactly once, so the next prompt is admitted.
 	const second = operations.submit(
 		prompt({ requestId: SECOND_ID }),
 		"digest-b",
 	);
 	expect(second.state).toBe("running");
+	expect(operations.view().operation?.id).toBe(second.id);
 	engine.complete("three");
+	await operations.waitForIdle();
+	expect(count.finishes).toBe(2);
+	await operations.stop();
+	store.close();
+});
+
+test("a late stream event cannot disturb settled or current work", async () => {
+	const store = openOperationStore(":memory:");
+	const engine = new FakeEngine();
+	let announcements = 0;
+	const operations = createOperations({
+		store,
+		engine,
+		onChange: () => {
+			announcements += 1;
+		},
+	});
+	const accepted = operations.submit(prompt(), "digest-a");
+	const stale = engine.handles();
+	engine.emitText("hello");
+	engine.complete("hello");
+	await operations.waitForIdle();
+	const settled = store.find(accepted.id);
+
+	const second = operations.submit(
+		prompt({ requestId: SECOND_ID }),
+		"digest-b",
+	);
+	const before = announcements;
+	// The finished run streams more text, as an adapter with a straggling provider
+	// write would. It belongs to neither the settled operation nor the live one.
+	stale.emit({ type: "text", text: " and more" });
+	expect(operations.view().liveText).toBe("");
+	expect(operations.view().operation?.id).toBe(second.id);
+	expect(store.find(accepted.id)).toEqual(settled);
+	// Nothing changed, so nothing was announced.
+	expect(announcements).toBe(before);
+	engine.complete("second answer");
 	await operations.waitForIdle();
 	await operations.stop();
 	store.close();

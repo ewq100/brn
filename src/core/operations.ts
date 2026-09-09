@@ -108,15 +108,24 @@ class Coordinator implements Operations {
 			throw new BrnError("MODEL_MISMATCH");
 		}
 		const admitted = this.store.insert(command, requestHash);
-		// From here the operation is durably accepted, so it holds the seat even if the
-		// transition below fails: the ledger, not this field, decides what is occupied.
 		this.activeId = admitted.id;
 		this.liveText = "";
 		this.liveBytes = 0;
 		this.previewFull = false;
 		this.pendingFailureCode = null;
 		this.cancellation = null;
-		const running = this.store.transition(admitted.id, ["accepted"], "running");
+		let running: Operation;
+		try {
+			running = this.store.transition(admitted.id, ["accepted"], "running");
+		} catch (error) {
+			// No run was started and no settlement exists, so keeping the seat would
+			// hold it until the process restarts and make every later refusal read
+			// `BUSY` instead of the real reason. The durably accepted row still holds
+			// the ledger's own seat and is recovered as `interrupted` on restart.
+			this.activeId = null;
+			this.onChange();
+			throw error;
+		}
 
 		const settlement = this.lifecycle(command, admitted.id);
 		// The failure is retained on the promise and reported through waitForIdle,
@@ -209,12 +218,15 @@ class Coordinator implements Operations {
 		if (control !== null) await control;
 		const active = this.activeId;
 		if (active !== null) {
-			// A failure here is already recorded in the ledger, and shutdown must not
-			// abandon the settlement it is waiting for.
+			// Swallowed only so shutdown still reaches the settlement below, which is
+			// where a lost write is reported.
 			await this.cancel(active).catch(() => undefined);
 		}
 		const settlement = this.settlement;
-		if (settlement !== null) await settlement.catch(() => undefined);
+		// Nothing swallows this. When the authoritative write is what was lost, the
+		// ledger holds no record of it, so discarding the rejection here would erase
+		// the only report; the process owner's error handler is that report.
+		if (settlement !== null) await settlement;
 	}
 
 	/**
@@ -320,7 +332,10 @@ class Coordinator implements Operations {
 	): Operation {
 		if (this.activeId !== id) {
 			// A second settlement signal for an operation that already finished changes
-			// nothing.
+			// nothing. Depth only: an engine cannot reach this branch, because one run
+			// is awaited once and a promise resolves once, so a duplicate outcome is
+			// absorbed before it arrives here. It guards a future in-process adapter
+			// that settles a run by some other route.
 			const recorded = this.store.find(id);
 			if (recorded === null) throw new BrnError("UNKNOWN_OPERATION");
 			return recorded;

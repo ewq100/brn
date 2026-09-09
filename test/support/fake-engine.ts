@@ -35,6 +35,9 @@ interface PendingRun {
 	readonly reject: (failure: unknown) => void;
 }
 
+/** A settled run's handles, so a test can deliver a late signal for finished work. */
+export type RunHandles = PendingRun;
+
 export class FakeEngine implements ConversationEngine {
 	/** Every command `run` has been asked to execute, in order. */
 	readonly calls: PromptCommand[] = [];
@@ -54,6 +57,13 @@ export class FakeEngine implements ConversationEngine {
 	private readonly available: ModelId[] = [{ provider: "test", id: "offline" }];
 	private readonly results = new Map<string, string>();
 	private pending: PendingRun | null = null;
+	/**
+	 * The most recent run's handles, kept after that run settles. `pending` is
+	 * cleared on settlement — that is what makes the cancellation races
+	 * deterministic — so this is the only way a test can deliver a late signal for
+	 * an operation the coordinator has already finished.
+	 */
+	private latest: PendingRun | null = null;
 	private entryIds: string[] = [];
 	private sessionCounter = 1;
 	private entryCounter = 0;
@@ -108,6 +118,7 @@ export class FakeEngine implements ConversationEngine {
 		this.entryIds = [];
 		return new Promise<RunResult>((resolve, reject) => {
 			this.pending = { emit, settle: resolve, reject };
+			this.latest = this.pending;
 		});
 	}
 
@@ -194,6 +205,17 @@ export class FakeEngine implements ConversationEngine {
 
 	get running(): boolean {
 		return this.pending !== null;
+	}
+
+	/**
+	 * The handles of the most recent run, valid after it settled. A test uses these
+	 * to replay a completion or a stream event for finished work, which a
+	 * well-behaved adapter never does.
+	 */
+	handles(): RunHandles {
+		const run = this.latest;
+		if (run === null) throw new Error("fake engine has never run");
+		return run;
 	}
 
 	private require(): PendingRun {
