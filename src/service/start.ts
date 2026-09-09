@@ -4,11 +4,12 @@ import { open, rename, rm, unlink } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
+import { errnoOf, MANAGED_FILE_MODE } from "../core/fs.ts";
+import { syncDirectory } from "./fs.ts";
 import { createRequestHandler } from "./http.ts";
-import { logInfo } from "./log.ts";
+import { logError, logInfo } from "./log.ts";
 import {
 	acquireOwnership,
-	MANAGED_FILE_MODE,
 	type Ownership,
 	requireSafeManagedFile,
 } from "./ownership.ts";
@@ -55,15 +56,6 @@ async function listen(server: Server): Promise<AddressInfo> {
 	});
 }
 
-async function syncDirectory(path: string): Promise<void> {
-	const handle = await open(path, constants.O_RDONLY);
-	try {
-		await handle.sync();
-	} finally {
-		await handle.close();
-	}
-}
-
 /**
  * Publishes discovery atomically: an owner-only temporary file in the same
  * directory, flushed, renamed over the target, then the directory flushed. A
@@ -97,6 +89,40 @@ async function publishDiscovery(
 }
 
 /**
+ * Reads the published discovery document, or reports its absence.
+ *
+ * Only `ENOENT` is a legitimate absence. Every other failure — a permission
+ * error, a symlink swapped in under us, a truncated or malformed document — is
+ * logged under a fixed code and rethrown, because a shutdown that cannot read
+ * its own document must not silently leave a stale one naming a dead PID.
+ */
+async function readPublishedDiscovery(target: string): Promise<unknown> {
+	let text: string;
+	try {
+		const handle = await open(
+			target,
+			constants.O_RDONLY | constants.O_NOFOLLOW,
+		);
+		try {
+			text = await handle.readFile("utf8");
+		} finally {
+			await handle.close();
+		}
+	} catch (error) {
+		const errno = errnoOf(error);
+		if (errno === "ENOENT") return undefined;
+		logError("service.discovery_unreadable", { reason: errno ?? "unknown" });
+		throw error;
+	}
+	try {
+		return JSON.parse(text);
+	} catch (error) {
+		logError("service.discovery_unreadable", { reason: "not_json" });
+		throw error;
+	}
+}
+
+/**
  * Removes the discovery document only if it is still this instance's. Ownership
  * is never reclaimed by deleting another instance's discovery file.
  */
@@ -105,20 +131,8 @@ async function withdrawDiscovery(
 	instanceId: string,
 ): Promise<void> {
 	const target = join(root, DISCOVERY_FILE);
-	let published: unknown;
-	try {
-		const handle = await open(
-			target,
-			constants.O_RDONLY | constants.O_NOFOLLOW,
-		);
-		try {
-			published = JSON.parse(await handle.readFile("utf8"));
-		} finally {
-			await handle.close();
-		}
-	} catch {
-		return;
-	}
+	const published = await readPublishedDiscovery(target);
+	if (published === undefined) return;
 	const owner =
 		typeof published === "object" &&
 		published !== null &&

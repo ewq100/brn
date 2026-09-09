@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { BrnError, type BrnErrorCode, isBrnError } from "../core/errors.ts";
+import { logError } from "./log.ts";
 
 /** The only request BRN answers at this stage. */
 const HEALTH_TARGET = "/v1/health";
@@ -69,6 +70,12 @@ const WIRE_FAILURES: ReadonlyMap<
 export function sendError(response: ServerResponse, error: unknown): void {
 	const failure = isBrnError(error) ? WIRE_FAILURES.get(error.code) : undefined;
 	if (failure === undefined) {
+		// An unmapped exception is a genuine internal fault. The response stays
+		// opaque, but it must not be invisible in operational logs; the code is a
+		// fixed identifier and carries no prompt, path, token or PID.
+		logError("http.internal_error", {
+			code: isBrnError(error) ? error.code : "UNMAPPED_EXCEPTION",
+		});
 		sendJson(response, 500, {
 			error: { code: "INTERNAL_ERROR", message: "Internal Server Error" },
 		});

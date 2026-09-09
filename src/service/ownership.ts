@@ -3,10 +3,10 @@ import { constants } from "node:fs";
 import { type FileHandle, lstat, mkdir, open } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { BrnError } from "../core/errors.ts";
+import { errnoOf, MANAGED_FILE_MODE } from "../core/fs.ts";
+import { syncDirectory } from "./fs.ts";
 import { openDatabase } from "./sqlite.ts";
 
-/** Every file BRN creates inside a state directory is owner read/write only. */
-export const MANAGED_FILE_MODE = 0o600;
 /** A state directory grants nothing to group or other. */
 export const STATE_DIR_MODE = 0o700;
 
@@ -22,14 +22,6 @@ export interface Ownership {
 	readonly root: string;
 	/** Ends the write transaction and closes the lock connection. Never unlinks state. */
 	release(): void;
-}
-
-function errnoOf(error: unknown): string | undefined {
-	if (typeof error === "object" && error !== null && "code" in error) {
-		const code = (error as { code: unknown }).code;
-		if (typeof code === "string") return code;
-	}
-	return undefined;
 }
 
 /** True only for a positively identified SQLite busy/locked result. */
@@ -65,22 +57,15 @@ function pathPrefixes(path: string): string[] {
 	return prefixes;
 }
 
-/** fsync a directory so a newly created entry inside it survives a crash. */
-async function syncDirectory(path: string): Promise<void> {
-	const handle = await open(path, constants.O_RDONLY);
-	try {
-		await handle.sync();
-	} finally {
-		await handle.close();
-	}
-}
-
 /**
  * Creates the state directory if absent, then proves it is a real directory we
  * own, reachable without traversing a symlink, and closed to group and other.
  *
  * The path is proven symlink-free before anything is created, so a rejected
- * state directory leaves no directory behind.
+ * state directory leaves no directory behind. Only the final component is
+ * created: an absent intermediate parent is reported as `missing_parent` rather
+ * than silently materialising a chain of directories the caller never asked for,
+ * each of which would need its own permission decision.
  */
 async function prepareStateDirectory(root: string): Promise<string> {
 	requireAbsoluteStateDir(root);
@@ -89,7 +74,8 @@ async function prepareStateDirectory(root: string): Promise<string> {
 		if (prefix === root) continue;
 		const stats = await lstat(prefix).catch((error: unknown) => {
 			const errno = errnoOf(error);
-			if (errno === "ENOENT" || errno === "EACCES" || errno === "EPERM") {
+			if (errno === "ENOENT") throw invalid("missing_parent");
+			if (errno === "EACCES" || errno === "EPERM") {
 				throw invalid("unusable_parent");
 			}
 			throw error;
@@ -104,7 +90,10 @@ async function prepareStateDirectory(root: string): Promise<string> {
 		const errno = errnoOf(error);
 		if (errno === "EEXIST") {
 			// Fall through to the checks below, which decide whether it is usable.
-		} else if (errno === "EACCES" || errno === "EPERM" || errno === "ENOENT") {
+		} else if (errno === "ENOENT") {
+			// The parent vanished between the walk above and this mkdir.
+			throw invalid("missing_parent");
+		} else if (errno === "EACCES" || errno === "EPERM") {
 			throw invalid("unusable_parent");
 		} else {
 			throw error;

@@ -132,6 +132,11 @@ const rejectionCases: readonly RejectionCase[] = [
 		},
 	},
 	{
+		name: "a state directory whose parent does not exist",
+		reason: "missing_parent",
+		prepare: async (root) => join(root, "absent", "child"),
+	},
+	{
 		name: "a group- or world-accessible state directory",
 		reason: "mode",
 		prepare: async (root) => {
@@ -201,6 +206,20 @@ for (const rejection of rejectionCases) {
 		expect(service.output()).toContain(rejection.reason);
 	});
 }
+
+test("a state directory with a missing parent is refused, and no parent is created", async () => {
+	const root = await makeRoot("brn-missing-parent-");
+	const service = await spawnService(root, {
+		expectReady: false,
+		stateDir: join(root, "absent", "child"),
+	});
+	expect(await service.exit).not.toBe(0);
+	expect(service.output()).toContain("INVALID_STATE_DIR");
+	// A distinct reason from `unusable_parent`: the operator can act on it, and
+	// creating the intermediate chain is state they never asked for.
+	expect(service.output()).toContain("missing_parent");
+	expect(existsSync(join(root, "absent"))).toBe(false);
+});
 
 test("a refused state directory is not created", async () => {
 	const root = await makeRoot("brn-nocreate-");

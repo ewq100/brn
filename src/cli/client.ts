@@ -4,9 +4,9 @@ import { join } from "node:path";
 import { type Static, type TSchema, Type } from "typebox";
 import { Check } from "typebox/value";
 import { BrnError } from "../core/errors.ts";
+import { errnoOf, MANAGED_FILE_MODE } from "../core/fs.ts";
 
 const DISCOVERY_FILE = "discovery.json";
-const MANAGED_FILE_MODE = 0o600;
 
 /**
  * A published instance description. `host` is pinned to the loopback interface by
@@ -47,14 +47,6 @@ export interface Client {
 		schema: S,
 		body?: unknown,
 	): Promise<Static<S>>;
-}
-
-function errnoOf(error: unknown): string | undefined {
-	if (typeof error === "object" && error !== null && "code" in error) {
-		const code = (error as { code: unknown }).code;
-		if (typeof code === "string") return code;
-	}
-	return undefined;
 }
 
 /**

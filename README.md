@@ -15,12 +15,17 @@ npm run build
 
 ## Running the service
 
-The service needs an absolute, explicitly chosen state directory. It creates the
-directory owner-only if it is missing, and refuses one that is a symlink, that
-someone else owns, that is readable by group or other, or that contains managed
-files with unexpected permissions or extra hard links.
+The service needs an absolute, explicitly chosen state directory whose parent
+already exists: it creates only the final directory, owner-only, if that is
+missing. It refuses one whose parent is absent, and refuses a path in which any
+component — the directory itself or any ancestor — is a symlink. On macOS that
+rules out anything under `/tmp`, which is a symlink to `/private/tmp`; use the
+resolved path instead. It also refuses a directory that someone else owns, that
+is readable by group or other, or that contains managed files with unexpected
+permissions or extra hard links.
 
 ```bash
+mkdir -p "$HOME/.brn"
 npm run service -- --state-dir "$HOME/.brn/default"
 ```
 

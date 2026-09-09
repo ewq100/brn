@@ -1,7 +1,9 @@
 import { chmod, mkdtemp, realpath } from "node:fs/promises";
+import type { ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
+import { sendError } from "../src/service/http.ts";
 import {
 	type Discovery,
 	differentTokenOfSameLength,
@@ -284,4 +286,43 @@ test("the CLI refuses to attach when no service is running", async () => {
 	const result = await runCli(["--state-dir", root, "status"]);
 	expect(result.code).not.toBe(0);
 	expect(result.output).toContain("NO_SERVICE");
+});
+
+test("an unmapped internal fault is opaque on the wire but logged", () => {
+	const written: string[] = [];
+	const realWrite = process.stderr.write.bind(process.stderr);
+	process.stderr.write = ((chunk: string | Uint8Array) => {
+		written.push(String(chunk));
+		return true;
+	}) as typeof process.stderr.write;
+
+	let status = 0;
+	let body = "";
+	const response = {
+		writeHead(code: number) {
+			status = code;
+			return response;
+		},
+		end(chunk?: string) {
+			body = chunk ?? "";
+		},
+	};
+	try {
+		sendError(
+			response as unknown as ServerResponse,
+			new Error("secret detail /Users/someone/.brn/default"),
+		);
+	} finally {
+		process.stderr.write = realWrite;
+	}
+
+	expect(status).toBe(500);
+	expect(body).toContain("INTERNAL_ERROR");
+	expect(body).not.toContain("secret detail");
+	const log = written.join("");
+	expect(log).toContain("http.internal_error");
+	expect(log).toContain("UNMAPPED_EXCEPTION");
+	// The log line carries a fixed code only: no message, path, token or PID.
+	expect(log).not.toContain("secret detail");
+	expect(log).not.toContain(".brn/default");
 });
