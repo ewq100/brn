@@ -58,16 +58,19 @@ function pathPrefixes(path: string): string[] {
 }
 
 /**
- * Creates the state directory if absent, then proves it is a real directory we
+ * Creates a managed directory if absent, then proves it is a real directory we
  * own, reachable without traversing a symlink, and closed to group and other.
  *
+ * This guards the state directory itself and every directory BRN keeps inside
+ * it, so there is one definition of "a directory this process may write to".
+ *
  * The path is proven symlink-free before anything is created, so a rejected
- * state directory leaves no directory behind. Only the final component is
- * created: an absent intermediate parent is reported as `missing_parent` rather
- * than silently materialising a chain of directories the caller never asked for,
+ * directory leaves nothing behind. Only the final component is created: an
+ * absent intermediate parent is reported as `missing_parent` rather than
+ * silently materialising a chain of directories the caller never asked for,
  * each of which would need its own permission decision.
  */
-async function prepareStateDirectory(root: string): Promise<string> {
+export async function prepareStateDirectory(root: string): Promise<string> {
 	requireAbsoluteStateDir(root);
 
 	for (const prefix of pathPrefixes(root)) {

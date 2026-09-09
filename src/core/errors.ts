@@ -46,6 +46,16 @@ export type BrnErrorCode =
 	| "UNKNOWN_OPERATION"
 	/** The ledger refused a state change because the recorded state moved on. */
 	| "OPERATION_CONFLICT"
+	/** No model is recorded for the conversation, so there is nothing to run it with. */
+	| "NO_MODEL"
+	/** The requested model is not offered by any authenticated provider. */
+	| "MODEL_UNAVAILABLE"
+	/** The named conversation cannot be opened, so no conversation is hosted for it. */
+	| "SESSION_UNAVAILABLE"
+	/** Two stored conversations claim the same native session ID. */
+	| "SESSION_CONFLICT"
+	/** The service hosts no conversation, so there is nothing to act on. */
+	| "NO_ACTIVE_SESSION"
 	/** Authoritative state failed a structural check. It is never deleted or rebuilt. */
 	| "STATE_CORRUPT"
 	/** Authoritative state was written by a newer BRN and cannot be downgraded. */

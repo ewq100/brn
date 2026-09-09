@@ -4,18 +4,18 @@ import { open, rename, rm, unlink } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
-import type { OperationStore } from "../core/conversation.ts";
 import { errnoOf, MANAGED_FILE_MODE } from "../core/fs.ts";
 import { syncDirectory } from "./fs.ts";
 import { createRequestHandler } from "./http.ts";
 import { logError, logInfo } from "./log.ts";
-import { openOperationStore } from "./operation-store.ts";
+import { openOperationStore, type ServiceStore } from "./operation-store.ts";
 import {
 	acquireOwnership,
 	createOrValidateManagedFile,
 	type Ownership,
 	requireSafeManagedFile,
 } from "./ownership.ts";
+import { openPiRuntime, type PiHost } from "./pi/runtime.ts";
 import { proveFts5 } from "./sqlite.ts";
 
 /** BRN binds loopback only; it is never reachable from another host. */
@@ -167,7 +167,7 @@ export async function startService(options: {
 	proveFts5();
 
 	const ownership: Ownership = await acquireOwnership(options.stateDir);
-	let store: OperationStore;
+	let store: ServiceStore;
 	try {
 		const operationsPath = join(ownership.root, OPERATIONS_DATABASE);
 		await createOrValidateManagedFile(operationsPath);
@@ -181,6 +181,18 @@ export async function startService(options: {
 		if (interrupted > 0) {
 			logInfo("service.operations_interrupted", { count: interrupted });
 		}
+	} catch (error) {
+		store.close();
+		ownership.release();
+		throw error;
+	}
+
+	// The shared model runtime, settings and resource loader open once and live as
+	// long as the process. No conversation exists and no model is chosen yet: that
+	// waits for an explicit control.
+	let piHost: PiHost;
+	try {
+		piHost = await openPiRuntime({ root: ownership.root, store });
 	} catch (error) {
 		store.close();
 		ownership.release();
@@ -221,8 +233,15 @@ export async function startService(options: {
 		ready = false;
 		server.close();
 		server.closeAllConnections();
-		store.close();
-		ownership.release();
+		try {
+			await piHost.close();
+		} finally {
+			try {
+				store.close();
+			} finally {
+				ownership.release();
+			}
+		}
 		throw error;
 	}
 
@@ -242,12 +261,17 @@ export async function startService(options: {
 				});
 				await withdrawDiscovery(ownership.root, instanceId);
 			} finally {
-				// Shutdown reverses startup: the ledger closes before ownership is
-				// released, so no second writer can appear while it is still open.
+				// Shutdown reverses startup: the conversation host settles and the
+				// ledger closes before ownership is released, so no second writer can
+				// appear while either is still open.
 				try {
-					store.close();
+					await piHost.close();
 				} finally {
-					ownership.release();
+					try {
+						store.close();
+					} finally {
+						ownership.release();
+					}
 				}
 			}
 		},

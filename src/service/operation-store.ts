@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { type Static, Type } from "typebox";
 import { Check } from "typebox/value";
 import type {
+	ModelId,
 	Operation,
 	OperationState,
 	OperationStore,
@@ -153,6 +154,67 @@ type _PersistedStateIsOperationState = Assignable<
 const SELECT_COLUMNS =
 	"id, session_id, request_hash, state, result_json, failure_code";
 
+/** The keys the `settings` table holds. Both are single-valued. */
+const ACTIVE_SESSION_KEY = "active_session";
+const DEFAULT_MODEL_KEY = "default_model";
+
+const ModelIdSchema = Type.Object(
+	{
+		provider: Type.String({ minLength: 1 }),
+		id: Type.String({ minLength: 1 }),
+	},
+	{ additionalProperties: false },
+);
+
+const SessionRowSchema = Type.Object(
+	{
+		model_json: Type.String({ minLength: 1 }),
+		materialized: Type.Integer({ minimum: 0, maximum: 1 }),
+	},
+	{ additionalProperties: false },
+);
+
+const SettingRowSchema = Type.Object(
+	{ value_json: Type.String({ minLength: 1 }) },
+	{ additionalProperties: false },
+);
+
+type _PersistedModelIsModelId = Assignable<
+	Static<typeof ModelIdSchema>,
+	ModelId
+>;
+type _ModelIdIsPersistable = Assignable<ModelId, Static<typeof ModelIdSchema>>;
+
+/** What BRN remembers about one native session, beside the session file itself. */
+export type SessionMetadata = {
+	model: ModelId;
+	/**
+	 * True once the native session has durable bytes. Pi assigns a session ID and
+	 * path before it writes anything, so an unmaterialized session exists only as
+	 * this row and is recreated by ID rather than opened from a file.
+	 */
+	materialized: boolean;
+};
+
+/**
+ * The service-local session and default-model metadata.
+ *
+ * These accessors stay out of the core `OperationStore` interface: the operation
+ * coordinator has no business knowing which session BRN last hosted, and `core`
+ * stays free of storage concerns.
+ */
+export interface SessionMetadataStore {
+	rememberSession(id: string, model: ModelId, materialized: boolean): void;
+	sessionMetadata(id: string): SessionMetadata | null;
+	setActiveSession(id: string | null): void;
+	getActiveSession(): string | null;
+	setDefaultModel(model: ModelId): void;
+	getDefaultModel(): ModelId | null;
+}
+
+/** Everything one BRN service process reads and writes in `operations.sqlite`. */
+export type ServiceStore = OperationStore & SessionMetadataStore;
+
 function corrupt(reason: string): BrnError {
 	return new BrnError("STATE_CORRUPT", reason);
 }
@@ -178,6 +240,32 @@ function decodeResult(json: string): RunResult {
 		throw corrupt("result_not_json");
 	}
 	if (!Check(RunResultSchema, parsed)) throw corrupt("result_schema");
+	return parsed;
+}
+
+/** Decodes a stored model identity, refusing anything that is not one. */
+function decodeModel(json: string): ModelId {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(json);
+	} catch {
+		throw corrupt("model_not_json");
+	}
+	if (!Check(ModelIdSchema, parsed)) throw corrupt("model_schema");
+	return parsed;
+}
+
+/** Decodes a stored session identifier, refusing anything that is not one. */
+function decodeSessionId(json: string): string {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(json);
+	} catch {
+		throw corrupt("session_id_not_json");
+	}
+	if (typeof parsed !== "string" || parsed.length === 0) {
+		throw corrupt("session_id_schema");
+	}
 	return parsed;
 }
 
@@ -240,7 +328,7 @@ function migrate(db: DatabaseSync): void {
 	}
 }
 
-class SqliteOperationStore implements OperationStore {
+class SqliteOperationStore implements ServiceStore {
 	private readonly db: DatabaseSync;
 	/** Set by the first failed write; every later mutation is refused. */
 	private unavailable = false;
@@ -365,6 +453,83 @@ class SqliteOperationStore implements OperationStore {
 		this.db.close();
 	}
 
+	rememberSession(id: string, model: ModelId, materialized: boolean): void {
+		this.write(() => {
+			this.db
+				.prepare(
+					`INSERT INTO sessions (id, model_json, materialized, created_at)
+					 VALUES (?, ?, ?, ?)
+					 ON CONFLICT(id) DO UPDATE SET
+					   model_json = excluded.model_json,
+					   materialized = excluded.materialized`,
+				)
+				.run(
+					id,
+					JSON.stringify(model),
+					materialized ? 1 : 0,
+					new Date().toISOString(),
+				);
+		});
+	}
+
+	sessionMetadata(id: string): SessionMetadata | null {
+		const row = this.db
+			.prepare("SELECT model_json, materialized FROM sessions WHERE id = ?")
+			.get(id);
+		if (row === undefined) return null;
+		if (!Check(SessionRowSchema, row)) throw corrupt("session_row");
+		return {
+			model: decodeModel(row.model_json),
+			materialized: row.materialized === 1,
+		};
+	}
+
+	setActiveSession(id: string | null): void {
+		if (id === null) {
+			this.write(() => {
+				this.db
+					.prepare("DELETE FROM settings WHERE key = ?")
+					.run(ACTIVE_SESSION_KEY);
+			});
+			return;
+		}
+		this.putSetting(ACTIVE_SESSION_KEY, id);
+	}
+
+	getActiveSession(): string | null {
+		const stored = this.getSetting(ACTIVE_SESSION_KEY);
+		return stored === null ? null : decodeSessionId(stored);
+	}
+
+	setDefaultModel(model: ModelId): void {
+		this.putSetting(DEFAULT_MODEL_KEY, model);
+	}
+
+	getDefaultModel(): ModelId | null {
+		const stored = this.getSetting(DEFAULT_MODEL_KEY);
+		return stored === null ? null : decodeModel(stored);
+	}
+
+	private putSetting(key: string, value: unknown): void {
+		this.write(() => {
+			this.db
+				.prepare(
+					`INSERT INTO settings (key, value_json) VALUES (?, ?)
+					 ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json`,
+				)
+				.run(key, JSON.stringify(value));
+		});
+	}
+
+	private getSetting(key: string): string | null {
+		const row = this.db
+			.prepare("SELECT value_json FROM settings WHERE key = ?")
+			.get(key);
+		if (row === undefined) return null;
+		if (!Check(SettingRowSchema, row)) throw corrupt("setting_row");
+		return row.value_json;
+	}
+
 	private unfinished(): Operation | null {
 		const row = this.db
 			.prepare(
@@ -411,7 +576,7 @@ class SqliteOperationStore implements OperationStore {
  * schema is created in one transaction. Callers must already hold the process's
  * single-writer lock.
  */
-export function openOperationStore(path: string): OperationStore {
+export function openOperationStore(path: string): ServiceStore {
 	const db = openDatabase(path);
 	try {
 		requireIntact(db);
