@@ -18,6 +18,16 @@ import { Value } from "typebox/value";
 /** The maximum prompt BRN accepts, in UTF-8 bytes. Checked after schema validation. */
 export const MAX_PROMPT_BYTES = 16384;
 
+/**
+ * The largest response BRN asks a provider for, in output tokens.
+ *
+ * The service's Pi adapter re-applies it to the seated model on every request.
+ * It lives here, with the other bounds both sides need to agree on, so the
+ * client can disclose the limit an operator is working under without importing
+ * anything from the service.
+ */
+export const MAX_OUTPUT_TOKENS = 4096;
+
 /** The HTTP request-body ceiling, in bytes, applied before any parsing. */
 export const MAX_BODY_BYTES = 128 * 1024;
 

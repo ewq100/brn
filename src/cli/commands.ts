@@ -21,7 +21,9 @@ import type {
 	Usage,
 } from "../core/conversation.ts";
 import { BrnError, isBrnError } from "../core/errors.ts";
+import { DEFAULT_DEADLINE_MS } from "../core/operations.ts";
 import {
+	MAX_OUTPUT_TOKENS,
 	MAX_PROMPT_BYTES,
 	ModelsResponseSchema,
 	OperationSchema,
@@ -218,6 +220,23 @@ export function formatWork(view: OperationView): string {
 	return lines.join("\n");
 }
 
+/**
+ * The bounds an operator is working under, shown before anything is submitted.
+ *
+ * Every figure is read from the shared contract rather than written out here, so
+ * the disclosure cannot drift from the limit that is actually enforced. The last
+ * clause is the honest part: a context window is not a spending cap, and
+ * automatic compaction spends tokens of its own to stay inside it.
+ */
+export function formatLimits(): string {
+	return [
+		`Limits: prompt ${MAX_PROMPT_BYTES} bytes, response ${MAX_OUTPUT_TOKENS} tokens,`,
+		"one operation at a time, no automatic retry,",
+		`cancellation requested after ${Math.round(DEFAULT_DEADLINE_MS / 1000)}s.`,
+		"A context window is not a spending limit.",
+	].join(" ");
+}
+
 /** One complete readable view of a snapshot, shared by `status` and the client. */
 export function formatStatus(snapshot: Snapshot): string {
 	const session = snapshot.conversation.session;
@@ -229,6 +248,7 @@ export function formatStatus(snapshot: Snapshot): string {
 		formatWork(snapshot.work),
 		formatContext(snapshot.conversation.context),
 		formatUsage(snapshot.conversation.usage),
+		formatLimits(),
 		// No tool is registered in Capability A, and none is invented to fill a widget.
 		"Tools: none (Capability A)",
 	];

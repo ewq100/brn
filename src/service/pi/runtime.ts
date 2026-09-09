@@ -38,6 +38,7 @@ import type {
 } from "../../core/conversation.ts";
 import { BrnError } from "../../core/errors.ts";
 import { errnoOf } from "../../core/fs.ts";
+import { MAX_OUTPUT_TOKENS } from "../../protocol/contracts.ts";
 import { syncDirectory } from "../fs.ts";
 import type { SessionMetadataStore } from "../operation-store.ts";
 import { prepareStateDirectory } from "../ownership.ts";
@@ -46,8 +47,12 @@ import { createControlledResourceLoader } from "./resources.ts";
 /** Model-catalog work is bounded: an unreachable provider must not hang a control. */
 const CATALOG_TIMEOUT_MS = 15_000;
 
-/** No BRN conversation asks a provider for more than this in one response. */
-export const MAX_RESPONSE_TOKENS = 4096;
+/**
+ * No BRN conversation asks a provider for more than this in one response. It is
+ * the shared wire-contract bound, so the limit the client discloses and the limit
+ * the adapter applies cannot drift apart.
+ */
+export const MAX_RESPONSE_TOKENS = MAX_OUTPUT_TOKENS;
 
 /** Compaction stays on, with the reserve BRN's conversations are sized for. */
 const COMPACTION = {
@@ -217,11 +222,18 @@ class Host implements PiHost {
 	/**
 	 * The native sessions this state root holds.
 	 *
+	 * The listing is of BRN's own sessions directory as a whole. `SessionManager.list`
+	 * would additionally filter by the conversation's recorded working directory,
+	 * which is an absolute path inside the state root: a root that was stopped,
+	 * copied and restored under a different path would list none of its own
+	 * sessions and could not reopen the native results its ledger references. BRN
+	 * owns this directory exclusively, so its contents are its sessions.
+	 *
 	 * An empty, unmaterialized conversation has no native bytes yet and therefore
 	 * does not appear here; it is recreated from its metadata by `resume`.
 	 */
 	async sessions(): Promise<SessionInfo[]> {
-		const listed = await SessionManager.list(this.workDir, this.sessionsDir);
+		const listed = await SessionManager.listAll(this.sessionsDir);
 		return listed.map((session) => ({
 			id: session.id,
 			model: this.store.sessionMetadata(session.id)?.model ?? null,
@@ -248,7 +260,10 @@ class Host implements PiHost {
 
 	async resume(sessionId: string): Promise<SessionInfo> {
 		this.requireOpen();
-		const listed = await SessionManager.list(this.workDir, this.sessionsDir);
+		// The same whole-directory listing `sessions()` reports, for the same reason:
+		// a restored copy's conversations live under a different working directory
+		// and are still this root's own.
+		const listed = await SessionManager.listAll(this.sessionsDir);
 		const matches = listed.filter((session) => session.id === sessionId);
 		// Two files claiming one identity is a conflict to report, not a choice to
 		// make on the caller's behalf.

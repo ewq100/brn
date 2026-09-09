@@ -51,7 +51,7 @@ operation running.
 
 | Command | Interactive equivalent | What it does |
 |---|---|---|
-| `status` | `/status` | readiness, active session, current work, context and usage |
+| `status` | `/status` | readiness, active session, current work, context, usage and the operating limits |
 | `models` | `/models` | the models an authenticated provider offers |
 | `sessions` | `/sessions` | the native BRN sessions that exist |
 | `new --model PROVIDER/MODEL` | `/new PROVIDER/MODEL` | create and select a new conversation |
@@ -113,7 +113,11 @@ the operation continues, and `operation OPERATION_ID` reads its answer later.
 Capability A registers no tools, so the client shows `Tools: none (Capability
 A)`. Context is reported honestly: when the token count is unknown it says
 `unknown` rather than inventing an estimate, and a completed-but-truncated answer
-is labelled as partial rather than presented as a complete one.
+is labelled as partial rather than presented as a complete one. The status display
+also names the concrete seated model and the limits you are working under — prompt
+bytes, requested output tokens, one operation at a time, no automatic retry, and
+the cancellation deadline — before anything is submitted. A context window is not
+a spending limit, and the display says so.
 
 Everything the service sends is sanitized before it reaches the terminal.
 Newlines and tabs survive; every other control character is shown as a visible
@@ -127,3 +131,26 @@ npm run typecheck
 npm test
 npm run lint
 ```
+
+`npm test` is the default suite: deterministic checks against a real service
+process, plus real-SDK checks that run the shipped Pi SDK against its own faux
+provider offline. Neither is a live-provider result. The acceptance journeys in
+`test/acceptance/service-terminal.test.ts` cover crash, restart and restoration
+with real signals.
+
+One test can reach a real provider, and it is excluded from `npm test` and
+fail-closed: it refuses to run without an explicit authorization phrase, a
+disposable state directory and an explicit model.
+
+```bash
+npm run test:live   # refuses unless separately authorized
+```
+
+## Operating it
+
+[`docs/capability-a-operations.md`](docs/capability-a-operations.md) is the
+runbook: the commands, the limits and busy/cancellation policy, the state layout,
+how to read an interrupted outcome, which recovery actions are approved and which
+are explicitly not, the stopped-state backup rehearsal, and what the authorized
+live proof requires. Start there before running BRN against anything you care
+about.

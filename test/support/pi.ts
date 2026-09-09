@@ -80,6 +80,36 @@ function blockNetwork(): () => void {
 }
 
 /**
+ * The environment variables that could carry a real provider credential into a
+ * test. Every one of them is hidden, in this process and in any service child a
+ * test spawns.
+ */
+const CREDENTIAL_KEY_PATTERN =
+	/API_KEY|_TOKEN|CREDENTIAL|ANTHROPIC|OPENAI|GEMINI|GOOGLE|AZURE|AWS|MISTRAL|GROQ|XAI|DEEPSEEK|OPENROUTER|CEREBRAS|VERTEX|^PI_/i;
+
+/** The three variables Pi resolves its own agent directory from. */
+const HOME_KEYS = ["HOME", "USERPROFILE", "XDG_CONFIG_HOME"] as const;
+
+/**
+ * The environment a spawned service child gets: this process's own, minus every
+ * inherited provider credential, with the home directory pointed at a planted
+ * tree.
+ *
+ * A child that inherited `ANTHROPIC_API_KEY` or the real `HOME` could reach a
+ * paid provider or the operator's own Pi installation, which would make an
+ * offline assertion pass or fail for reasons that have nothing to do with BRN.
+ */
+export function isolatedChildEnvironment(home: string): Record<string, string> {
+	const environment: Record<string, string> = {};
+	for (const [key, value] of Object.entries(process.env)) {
+		if (value === undefined || CREDENTIAL_KEY_PATTERN.test(key)) continue;
+		environment[key] = value;
+	}
+	for (const key of HOME_KEYS) environment[key] = home;
+	return environment;
+}
+
+/**
  * Hides the real home directory and every inherited provider credential.
  *
  * An inherited `ANTHROPIC_API_KEY` would make a "no model available" assertion
@@ -92,15 +122,9 @@ function isolateEnvironment(home: string): () => void {
 		delete process.env[key];
 	};
 	for (const key of Object.keys(process.env)) {
-		if (
-			/API_KEY|_TOKEN|CREDENTIAL|ANTHROPIC|OPENAI|GEMINI|GOOGLE|AZURE|AWS|MISTRAL|GROQ|XAI|DEEPSEEK|OPENROUTER|CEREBRAS|VERTEX|^PI_/i.test(
-				key,
-			)
-		) {
-			hide(key);
-		}
+		if (CREDENTIAL_KEY_PATTERN.test(key)) hide(key);
 	}
-	for (const key of ["HOME", "USERPROFILE", "XDG_CONFIG_HOME"]) {
+	for (const key of HOME_KEYS) {
 		saved.set(key, process.env[key]);
 		process.env[key] = home;
 	}
@@ -121,8 +145,11 @@ export function extensionMarker(home: string): string {
  * Plants the personal Pi installation BRN must ignore: context files, settings,
  * a skill, a prompt template and an extension, in both the fake home and the
  * conversation's working directory.
+ *
+ * Exported so a test that spawns a real service child can poison the same
+ * places before the child starts.
  */
-async function plantAmbientResources(
+export async function plantAmbientResources(
 	home: string,
 	work: string,
 ): Promise<void> {

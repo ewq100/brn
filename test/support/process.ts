@@ -78,13 +78,87 @@ export interface SpawnServiceOptions {
 	 */
 	fakeEngine?: boolean;
 	/**
+	 * Compose the real Pi adapter over the SDK's own faux provider. Everything
+	 * about the conversation is the shipped SDK; only the provider behind it is
+	 * synthetic and in-process. Like `fakeEngine`, it is an argument of the test
+	 * composition entry alone.
+	 */
+	piFauxProvider?: boolean;
+	/** The answer the faux provider returns. Only meaningful with `piFauxProvider`. */
+	answer?: string;
+	/**
+	 * Arms one test-only failpoint in the composition harness, so a real signal
+	 * can arrive at an exactly known point of an operation's lifetime.
+	 */
+	failpoint?: Failpoint;
+	/**
 	 * Test-only event stream ceiling, passed to the child's composition entry as
 	 * an argument of its own. Nothing in production reads it.
 	 */
 	maxBufferedBytes?: number;
+	/** The child's environment. Defaults to this process's own. */
+	env?: Record<string, string>;
+	/**
+	 * Receives everything the child reports about its own progress. The caller
+	 * owns whatever it accumulates, which is what lets a count survive the death
+	 * of the process being counted.
+	 */
+	onNotice?: (notice: ChildNotice) => void;
 }
 
-/** One control message for the test-only engine, answered over IPC. */
+/**
+ * The points an operation's lifetime can be paused at, so a real signal arrives
+ * exactly between two steps whose ordering is the thing under test.
+ *
+ * They exist only in `test/support/service-child.ts`. No production argument,
+ * environment variable, header or endpoint can reach them.
+ */
+export type Failpoint =
+	| "after-admission-before-run"
+	| "after-native-result-before-ledger-finish"
+	| "after-ledger-finish-before-http-response";
+
+/**
+ * What one request to the faux provider carried, as the real SDK built it.
+ *
+ * It is a summary rather than a copy: no prompt or answer text travels here,
+ * only the counts and flags a test asserts on.
+ */
+export interface ProviderRequestSummary {
+	readonly provider: string;
+	readonly model: string;
+	readonly maxTokens: number;
+	readonly toolNames: readonly string[];
+	readonly systemPromptHasSentinel: boolean;
+	readonly messagesHaveSentinel: boolean;
+	readonly messageCount: number;
+	/** Assistant turns already in the context, so a reopened history is visible. */
+	readonly assistantTextCount: number;
+}
+
+/**
+ * One thing the child reported as it happened.
+ *
+ * These are pushed rather than polled, so a count of provider requests or engine
+ * runs lives in the test process and survives the `SIGKILL` of the service that
+ * produced it. A count kept inside the child, or in BRN's own state, could reset
+ * to zero on restart and quietly satisfy the assertion it was meant to test.
+ */
+export type ChildNotice =
+	| { readonly type: "engine-run" }
+	| { readonly type: "failpoint"; readonly name: Failpoint }
+	| {
+			readonly type: "provider-request";
+			readonly request: ProviderRequestSummary;
+	  };
+
+const NOTICE_TYPES: ReadonlySet<string> = new Set([
+	"engine-run",
+	"failpoint",
+	"provider-request",
+]);
+
+/** One control message for the test-only composition, answered over IPC. */
 export interface FakeCommand {
 	readonly action:
 		| "callCount"
@@ -93,12 +167,17 @@ export interface FakeCommand {
 		| "emit"
 		| "running"
 		| "awaitRunning"
-		| "status";
+		| "status"
+		| "stallCancel"
+		| "script"
+		| "ping";
 	readonly text?: string;
 	/** The failed-run code, for `fail`. Defaults to `PROVIDER_ERROR`. */
 	readonly code?: FailedCode;
 	/** The status the engine should report, for `status`. */
 	readonly status?: Extract<EngineEvent, { type: "status" }>["status"];
+	/** For `script`: answer with a provider error instead of an assistant answer. */
+	readonly failed?: boolean;
 }
 
 /** A connection that is deliberately never read from. */
@@ -114,6 +193,8 @@ export interface ServiceHandle {
 	readonly ready: Promise<void>;
 	/** Resolves with the child's exit code, or `null` when a signal killed it. */
 	readonly exit: Promise<number | null>;
+	/** True once the child has gone, so a caller does not signal a dead process. */
+	exited(): boolean;
 	signal(signal: NodeJS.Signals): void;
 	/** Everything the child wrote to stdout and stderr so far. */
 	output(): string;
@@ -125,7 +206,12 @@ export interface ServiceHandle {
 	 * server's own write queue is the only place the bytes can go.
 	 */
 	openUnreadStream(path: string): Promise<UnreadStream>;
-	/** Drives the test-only engine over IPC. Only valid with `fakeEngine`. */
+	/**
+	 * Drives the test-only composition over IPC. The deterministic engine answers
+	 * the run-control actions; the faux-provider composition answers `script` and
+	 * `ping`. Both answer `ping`, so a reply proves every notice the child sent
+	 * before it has already been delivered.
+	 */
 	fake(command: FakeCommand): Promise<unknown>;
 	close(): Promise<void>;
 }
@@ -143,6 +229,15 @@ export async function spawnService(
 	const stateDir = options.stateDir ?? root;
 	const childArguments = [serviceChild, "--state-dir", stateDir];
 	if (options.fakeEngine === true) childArguments.push("--fake-engine");
+	if (options.piFauxProvider === true) {
+		childArguments.push("--pi-faux-provider");
+	}
+	if (options.answer !== undefined) {
+		childArguments.push("--answer", options.answer);
+	}
+	if (options.failpoint !== undefined) {
+		childArguments.push("--failpoint", options.failpoint);
+	}
 	if (options.maxBufferedBytes !== undefined) {
 		childArguments.push(
 			"--max-buffered-bytes",
@@ -151,7 +246,22 @@ export async function spawnService(
 	}
 	const child = spawn(nodeBinary, childArguments, {
 		stdio: ["ignore", "pipe", "pipe", "ipc"],
+		...(options.env === undefined ? {} : { env: options.env }),
 	});
+
+	// Everything the child reports as it happens, handed straight to the caller so
+	// what it accumulates outlives the child.
+	if (options.onNotice !== undefined) {
+		const receive = options.onNotice;
+		child.on("message", (message) => {
+			if (typeof message !== "object" || message === null) return;
+			if (!("type" in message)) return;
+			const type = (message as { type: unknown }).type;
+			if (typeof type === "string" && NOTICE_TYPES.has(type)) {
+				receive(message as unknown as ChildNotice);
+			}
+		});
+	}
 
 	const chunks: string[] = [];
 	child.stdout?.setEncoding("utf8");
@@ -225,6 +335,9 @@ export async function spawnService(
 		ready,
 		exit,
 		output,
+		exited() {
+			return exited;
+		},
 		signal(signal) {
 			process.kill(pid, signal);
 		},
