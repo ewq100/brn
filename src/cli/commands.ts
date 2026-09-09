@@ -173,6 +173,30 @@ export function formatOperationRecord(operation: Operation): string {
 	].join("\n");
 }
 
+/**
+ * The engine's own status, in BRN's words.
+ *
+ * `compacting` is deliberately not phrased like `working`: during compaction the
+ * engine is rewriting conversation history and no answer is being produced, and
+ * someone watching a silent screen deserves to know which of the two it is. The
+ * vocabulary is closed by the wire contract, so this maps fixed names rather than
+ * printing a server-controlled string.
+ */
+function formatEngineStatus(
+	status: OperationView["engineStatus"],
+): string | null {
+	switch (status) {
+		case null:
+			return null;
+		case "working":
+			return "Engine: working (producing an answer)";
+		case "compacting":
+			return "Engine: compacting the conversation history — no answer is being produced right now";
+		case "cancelling":
+			return "Engine: cancelling";
+	}
+}
+
 /** The current work, as the status display and the interactive client show it. */
 export function formatWork(view: OperationView): string {
 	const lines: string[] = [];
@@ -183,6 +207,8 @@ export function formatWork(view: OperationView): string {
 			`Work: ${operation.state} ${safeTerminalText(operation.id)} — ${describeOutcome(operation)}`,
 		);
 	}
+	const engine = formatEngineStatus(view.engineStatus);
+	if (engine !== null) lines.push(engine);
 	if (!view.accepting) {
 		lines.push("The service is shutting down and accepts no new work.");
 	}
@@ -263,6 +289,8 @@ export function correctiveAdvice(
 			return `The service answered something this client cannot read. Check that the service and client are the same build, then run: ${brn} status`;
 		case "UNSUPPORTED_COMMAND":
 			return `Supported commands: ${SUPPORTED_COMMANDS.join(", ")}`;
+		case "NOT_A_TERMINAL":
+			return `"chat" composes prompts in a terminal and cannot read from a pipe or a redirect. Run it from an interactive terminal, or submit one prompt without a terminal with: ${brn} prompt --request-id UUID --text TEXT`;
 		case "NO_ACTIVE_SESSION":
 			return `No conversation is hosted. Create one with: ${brn} new --model PROVIDER/MODEL`;
 		case "NO_MODEL":
@@ -322,8 +350,14 @@ function refusalAdvice(error: unknown, dir: string, brn: string): string {
 /** A failure as a user sees it: the fixed code, then something to do about it. */
 export function describeFailure(error: unknown, stateDir: string): string {
 	const code = isBrnError(error) ? error.code : "INTERNAL_ERROR";
+	// `code` is one of BRN's own fixed names, but `detail` is not always: a refused
+	// request carries the status and the code the *service's* body named, and a
+	// schema that bounds a string's length does not bound its character set. This is
+	// a sink, so it is filtered here like every other sink.
 	const detail =
-		isBrnError(error) && error.detail !== undefined ? ` (${error.detail})` : "";
+		isBrnError(error) && error.detail !== undefined
+			? ` (${safeTerminalText(error.detail)})`
+			: "";
 	const advice = correctiveAdvice(error, stateDir);
 	return advice === null
 		? `brn: ${code}${detail}`

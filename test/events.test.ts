@@ -34,6 +34,7 @@ const workContract: OperationView = {
 	liveText: "",
 	accepting: true,
 	controlling: false,
+	engineStatus: null,
 };
 const wireSnapshot: Snapshot = {
 	instanceId: "instance-test",
@@ -109,6 +110,7 @@ test("snapshot frames survive every UTF-8 chunk boundary", async () => {
 				liveText: "\u00f5",
 				accepting: true,
 				controlling: false,
+				engineStatus: null,
 			},
 		},
 	};

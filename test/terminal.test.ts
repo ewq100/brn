@@ -195,6 +195,7 @@ function hostileSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
 			liveText: "",
 			accepting: true,
 			controlling: false,
+			engineStatus: null,
 		},
 		...overrides,
 	};
@@ -639,6 +640,133 @@ test("an uncertain submission is queried before any new paid submission", async 
 		);
 		expect(await service.fakeCallCount()).toBe(1);
 		await service.completeFake("done");
+		session.type("/quit");
+		session.enter();
+		await session.finished;
+	} finally {
+		await service.close();
+	}
+});
+
+test("a compacting engine is visibly different from a working one", async () => {
+	const service = await spawnServiceWithFake();
+	const client = service.client;
+	const session = await attach(client);
+	try {
+		session.type("summarize everything");
+		session.enter();
+		const id = await activeOperationId(client);
+
+		// A real status event from the engine, through the coordinator, the wire and
+		// the client's own status display.
+		await service.statusFake("working");
+		await waitFor("the working status", () =>
+			session.terminal.output().includes("Engine: working"),
+		);
+		await service.statusFake("compacting");
+		await waitFor("the compacting status", () =>
+			session.terminal.output().includes("Engine: compacting"),
+		);
+		expect((await currentSnapshot(client)).work.engineStatus).toBe(
+			"compacting",
+		);
+		// The two are not the same words on screen.
+		expect(session.terminal.output()).toContain("no answer is being produced");
+
+		await service.completeFake("compacted, then answered");
+		await waitFor("the operation to settle", async () => {
+			return (await client.operation(id)).state === "succeeded";
+		});
+		// A settled operation carries no engine status: a stale one would be a lie.
+		expect((await currentSnapshot(client)).work.engineStatus).toBeNull();
+
+		// The `status` command reads the same field through the same formatter.
+		const recorded: string[] = [];
+		await runCommand(["status"], client, {
+			write(text) {
+				recorded.push(text);
+			},
+		});
+		expect(recorded.join("\n")).not.toContain("Engine:");
+
+		session.type("/quit");
+		session.enter();
+		await session.finished;
+	} finally {
+		await service.close();
+	}
+});
+
+test("text typed during a retry offer is kept rather than silently discarded", async () => {
+	const service = await spawnServiceWithFake();
+	const real = service.client;
+	let attempts = 0;
+	const flaky: Client = {
+		...real,
+		async submit(command) {
+			attempts += 1;
+			if (attempts === 1) throw new Error("connection reset");
+			return await real.submit(command);
+		},
+	};
+	const session = await attach(flaky);
+	try {
+		session.type("expensive prompt");
+		session.enter();
+		await waitFor("the uncertainty notice", () =>
+			session.terminal.output().includes("outcome is unknown"),
+		);
+		session.enter();
+		await waitFor("the query result", () =>
+			session.terminal.output().includes("never accepted"),
+		);
+
+		// The retained text is back in the editor; the user edits it before pressing
+		// Enter, which Pi clears before the client sees it.
+		session.type(" and then some");
+		session.enter();
+		// The retry still sends the retained record under its own request ID: a new
+		// one would be a new paid operation.
+		const first = await activeOperationId(real);
+		expect((await real.operation(first)).requestHash).toBe(
+			requestDigest({
+				sessionId: "session-1",
+				model: { provider: "test", id: "offline" },
+				text: "expensive prompt",
+			}),
+		);
+		// But the keystrokes are not gone: they are named in the transcript.
+		await waitFor("the kept-text notice", () =>
+			session.terminal.output().includes("Your text is kept in the editor"),
+		);
+		expect(session.terminal.output()).toContain(
+			"expensive prompt and then some",
+		);
+
+		await service.completeFake("first answer");
+		await waitFor("the first operation to settle", async () => {
+			return (await real.operation(first)).state === "succeeded";
+		});
+
+		// It is still in the editor, which submitting it proves: nothing had to echo
+		// it back.
+		session.enter();
+		let second: string | undefined;
+		await waitFor("the edited text's own submission", async () => {
+			const active = (await currentSnapshot(real)).work.operation;
+			if (active === null || active.id === first) return false;
+			second = active.id;
+			return true;
+		});
+		if (second === undefined) throw new Error("no second operation");
+		expect((await real.operation(second)).requestHash).toBe(
+			requestDigest({
+				sessionId: "session-1",
+				model: { provider: "test", id: "offline" },
+				text: "expensive prompt and then some",
+			}),
+		);
+		await service.completeFake("second answer");
 		session.type("/quit");
 		session.enter();
 		await session.finished;

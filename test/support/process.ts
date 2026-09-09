@@ -7,7 +7,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Client, connect } from "../../src/cli/client.ts";
-import type { PromptCommand } from "../../src/core/conversation.ts";
+import type {
+	EngineEvent,
+	PromptCommand,
+} from "../../src/core/conversation.ts";
 import { FAKE_MODEL, FAKE_SESSION_ID, type FailedCode } from "./fake-engine.ts";
 
 const supportDirectory = dirname(fileURLToPath(import.meta.url));
@@ -89,10 +92,13 @@ export interface FakeCommand {
 		| "fail"
 		| "emit"
 		| "running"
-		| "awaitRunning";
+		| "awaitRunning"
+		| "status";
 	readonly text?: string;
 	/** The failed-run code, for `fail`. Defaults to `PROVIDER_ERROR`. */
 	readonly code?: FailedCode;
+	/** The status the engine should report, for `status`. */
+	readonly status?: Extract<EngineEvent, { type: "status" }>["status"];
 }
 
 /** A connection that is deliberately never read from. */
@@ -426,6 +432,10 @@ export interface FakeServiceHandle {
 	failFake(partialText?: string, code?: FailedCode): Promise<void>;
 	/** Streams live text from the engine without recording a durable entry. */
 	emitFake(text: string): Promise<void>;
+	/** Waits for the engine to be running, then reports one engine status. */
+	statusFake(
+		status: Extract<EngineEvent, { type: "status" }>["status"],
+	): Promise<void>;
 	/** How many prompts the engine was actually asked to run. */
 	fakeCallCount(): Promise<number>;
 	/** Attaches a fresh client, re-reading discovery. */
@@ -479,6 +489,10 @@ export async function spawnServiceWithFake(
 		async emitFake(text) {
 			await service.fake({ action: "awaitRunning" });
 			await service.fake({ action: "emit", text });
+		},
+		async statusFake(status) {
+			await service.fake({ action: "awaitRunning" });
+			await service.fake({ action: "status", status });
 		},
 		async fakeCallCount() {
 			const value = await service.fake({ action: "callCount" });

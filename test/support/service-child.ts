@@ -6,8 +6,12 @@
 // `--fake-engine` it composes the deterministic engine and drives it over IPC.
 // That switch exists only here. No production argument, environment variable or
 // endpoint can reach it, and the fake is never imported by `src/`.
+import type { EngineEvent } from "../../src/core/conversation.ts";
 import { runService } from "../../src/service/main.ts";
 import { type FailedCode, FakeEngine } from "./fake-engine.ts";
+
+/** The statuses an engine may report about a run in flight. */
+type EngineStatus = Extract<EngineEvent, { type: "status" }>["status"];
 
 const RUNNING_POLL_MS = 5;
 const RUNNING_TIMEOUT_MS = 5_000;
@@ -46,6 +50,7 @@ async function apply(
 	action: string,
 	text: string | undefined,
 	code: FailedCode | undefined,
+	status: EngineStatus | undefined,
 ): Promise<unknown> {
 	switch (action) {
 		case "callCount":
@@ -62,6 +67,10 @@ async function apply(
 			return true;
 		case "emit":
 			engine.emitText(text ?? "");
+			return true;
+		case "status":
+			if (status === undefined) return null;
+			engine.emitEvent({ type: "status", status });
 			return true;
 		default:
 			return null;
@@ -83,8 +92,15 @@ function registerControls(engine: FakeEngine): void {
 			action: string;
 			text?: string;
 			code?: FailedCode;
+			status?: EngineStatus;
 		};
-		void apply(engine, command.action, command.text, command.code).then(
+		void apply(
+			engine,
+			command.action,
+			command.text,
+			command.code,
+			command.status,
+		).then(
 			(value) => {
 				process.send?.({ type: "fake-reply", id: command.id, value });
 			},

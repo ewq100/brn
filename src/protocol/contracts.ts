@@ -172,6 +172,18 @@ export const OperationViewSchema = Type.Object(
 		liveText: Type.String({ maxLength: MAX_LIVE_TEXT_LENGTH }),
 		accepting: Type.Boolean(),
 		controlling: Type.Boolean(),
+		/**
+		 * The engine's latest reported status for the occupied operation, from a
+		 * closed vocabulary, or `null` when nothing is occupied or nothing was
+		 * reported. It is deliberately one field: no progress figure and no context
+		 * estimate is derived from it.
+		 */
+		engineStatus: Type.Union([
+			Type.Null(),
+			Type.Literal("working"),
+			Type.Literal("compacting"),
+			Type.Literal("cancelling"),
+		]),
 	},
 	{ additionalProperties: false },
 );

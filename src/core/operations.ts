@@ -70,6 +70,15 @@ class Coordinator implements Operations {
 	private liveText = "";
 	private liveBytes = 0;
 	private previewFull = false;
+	/**
+	 * The engine's own latest word about the active run.
+	 *
+	 * It is retained rather than merely forwarded, because a snapshot is a complete
+	 * view: a client that connects mid-run must be able to see that the engine is
+	 * compacting rather than answering. It is cleared on settlement, so it never
+	 * describes an operation that has finished.
+	 */
+	private engineStatus: OperationView["engineStatus"] = null;
 	private pendingFailureCode: string | null = null;
 	private settlement: Promise<Operation> | null = null;
 	private cancellation: { id: string; promise: Promise<Operation> } | null =
@@ -112,6 +121,7 @@ class Coordinator implements Operations {
 		this.liveText = "";
 		this.liveBytes = 0;
 		this.previewFull = false;
+		this.engineStatus = null;
 		this.pendingFailureCode = null;
 		this.cancellation = null;
 		let running: Operation;
@@ -190,6 +200,7 @@ class Coordinator implements Operations {
 			liveText: this.liveText,
 			accepting: this.accepting,
 			controlling: this.controlling,
+			engineStatus: this.engineStatus,
 		};
 	}
 
@@ -263,6 +274,9 @@ class Coordinator implements Operations {
 		// A settled operation cannot grow its preview.
 		if (this.activeId !== id) return;
 		if (event.type === "text") this.appendPreview(id, event.text);
+		// One field, reported as the engine reported it. Nothing here estimates
+		// progress or invents a context figure from a status.
+		else if (event.type === "status") this.engineStatus = event.status;
 		this.onChange();
 	}
 
@@ -354,6 +368,7 @@ class Coordinator implements Operations {
 		// failed above, the operation stays occupied and the failure reaches the
 		// caller instead of a pretended success.
 		this.activeId = null;
+		this.engineStatus = null;
 		this.pendingFailureCode = null;
 		this.cancellation = null;
 		this.settlement = null;

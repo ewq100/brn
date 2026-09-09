@@ -40,6 +40,16 @@ export const REQUEST_TIMEOUT_MS = 30_000;
  */
 export const CANCEL_TIMEOUT_MS = 180_000;
 
+/**
+ * The shape every BRN failure code has.
+ *
+ * A refusal body's `code` is fixed text chosen in BRN's own source, but this
+ * client validates it rather than trusting the claim: anything else is not a code
+ * this client can act on, and it is dropped instead of being carried into a
+ * failure that ends up on a terminal.
+ */
+const FAILURE_CODE_PATTERN = /^[A-Z0-9_]+$/;
+
 /** Per-request overrides. Only the bound and the accepted statuses are adjustable. */
 export interface RequestOptions {
 	readonly timeoutMs?: number;
@@ -249,6 +259,12 @@ export async function connect(
 	/**
 	 * Reads the fixed failure code from a refusal body, or nothing when the body is
 	 * not the error contract. It never returns the body's message text.
+	 *
+	 * A code that is not one of BRN's own fixed names is discarded rather than
+	 * carried: the error contract bounds that field's length but not its character
+	 * set, so an ESC, a BEL or a CR could otherwise ride a refusal into a
+	 * `BrnError.detail` and out to a terminal. Only the shape a BRN code has —
+	 * upper-case letters, digits and underscores — is admitted.
 	 */
 	async function readFailureCode(
 		message: IncomingMessage,
@@ -260,7 +276,8 @@ export async function connect(
 			return null;
 		}
 		if (!Check(ErrorResponseSchema, parsed)) return null;
-		return parsed.error.code;
+		const code = parsed.error.code;
+		return FAILURE_CODE_PATTERN.test(code) ? code : null;
 	}
 
 	/**

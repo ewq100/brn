@@ -5,8 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { connect } from "../src/cli/client.ts";
-import { type CommandIo, runCommand } from "../src/cli/commands.ts";
+import {
+	type CommandIo,
+	describeFailure,
+	runCommand,
+} from "../src/cli/commands.ts";
 import type { PromptCommand } from "../src/core/conversation.ts";
+import { BrnError, isBrnError } from "../src/core/errors.ts";
 import { HealthSchema } from "../src/protocol/contracts.ts";
 import { runCli, spawnServiceWithFake } from "./support/process.ts";
 
@@ -350,6 +355,103 @@ test("a request to a service that never answers is bounded, and the stream is no
 	} finally {
 		await client.disconnect();
 		await hanging.close();
+	}
+});
+
+/**
+ * A server that refuses every request with a body a caller chooses.
+ *
+ * It exists so a refusal body that no BRN service would ever send — one whose
+ * `code` carries terminal escapes — can be pushed through the real client and the
+ * real failure path.
+ */
+async function refusingService(body: string): Promise<{
+	readonly stateDir: string;
+	close(): Promise<void>;
+}> {
+	const stateDir = await mkdtemp(join(await realpath(tmpdir()), "brn-refuse-"));
+	const server: Server = createServer((_request, response) => {
+		response.writeHead(409, {
+			"Content-Type": "application/json; charset=utf-8",
+		});
+		response.end(body);
+	});
+	await new Promise<void>((resolve) => {
+		server.listen(0, "127.0.0.1", () => resolve());
+	});
+	const address = server.address();
+	const port =
+		typeof address === "object" && address !== null ? address.port : 0;
+	const path = join(stateDir, "discovery.json");
+	await writeFile(
+		path,
+		JSON.stringify({
+			version: 1,
+			instanceId: "instance-refusing",
+			pid: process.pid,
+			host: `127.0.0.1:${port}`,
+			token: "token",
+		}),
+		{ mode: 0o600 },
+	);
+	await chmod(path, 0o600);
+	return {
+		stateDir,
+		async close() {
+			server.closeAllConnections();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		},
+	};
+}
+
+test("a hostile failure code never reaches a failure message", async () => {
+	// The error contract bounds this field's length, not its character set, so a
+	// body that passes schema validation can still carry ESC, BEL and CR.
+	const hostile = "\x1b]52;c;Y29weQ==\x07BU\rSY\u009b2J";
+	const refusing = await refusingService(
+		JSON.stringify({ error: { code: hostile, message: "refused" } }),
+	);
+	const client = await connect(refusing.stateDir, { requestTimeoutMs: 2_000 });
+	try {
+		const failure = await client
+			.request("GET", "/v1/snapshot", HealthSchema)
+			.then(() => null)
+			.catch((error: unknown) => error);
+		if (!isBrnError(failure)) throw new Error("expected a BRN failure");
+		// The code is not one of BRN's own fixed names, so the client dropped it
+		// rather than carrying it: only the status survives.
+		expect(failure.code).toBe("REQUEST_FAILED");
+		expect(failure.detail).toBe("409");
+
+		// Belt and braces: even a detail that did carry controls is filtered at the
+		// sink, so the two defences are independent.
+		const rendered = describeFailure(
+			new BrnError("REQUEST_FAILED", `409 ${hostile}`),
+			"/tmp/state",
+		);
+		for (const control of ["\x1b", "\x07", "\r", "\u009b"]) {
+			expect(rendered).not.toContain(control);
+		}
+		expect(rendered).toContain("REQUEST_FAILED");
+	} finally {
+		await client.disconnect();
+		await refusing.close();
+	}
+});
+
+test("chat refuses a non-interactive stdin instead of hanging", async () => {
+	const service = await spawnServiceWithFake();
+	try {
+		// `runCli` gives the child no stdin at all, which is exactly how a script or
+		// a pipe invokes it.
+		const result = await runCli(["--state-dir", service.root, "chat"]);
+		expect(result.code).toBe(1);
+		expect(result.output).toContain("NOT_A_TERMINAL");
+		// The refusal names the scriptable route rather than leaving the caller stuck.
+		expect(result.output).toContain("prompt --request-id");
+		expect((await service.service.request("/v1/health")).status).toBe(200);
+	} finally {
+		await service.close();
 	}
 });
 

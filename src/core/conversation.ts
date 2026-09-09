@@ -135,6 +135,16 @@ export type OperationView = {
 	liveText: string;
 	accepting: boolean;
 	controlling: boolean;
+	/**
+	 * The latest status the engine reported for the operation now occupying the
+	 * service, or `null` when none is occupied or none was reported.
+	 *
+	 * It is the engine's own word about what it is doing, retained so a client can
+	 * tell a run that is producing an answer from one that is compacting its
+	 * history and producing nothing. It is cleared when the operation settles: a
+	 * stale status is worse than none.
+	 */
+	engineStatus: "working" | "compacting" | "cancelling" | null;
 };
 
 export interface Operations {

@@ -66,6 +66,8 @@ export type BrnErrorCode =
 	| "SESSION_CONFLICT"
 	/** The service hosts no conversation, so there is nothing to act on. */
 	| "NO_ACTIVE_SESSION"
+	/** No terminal is attached to standard input, so there is nothing to compose in. */
+	| "NOT_A_TERMINAL"
 	/** Authoritative state failed a structural check. It is never deleted or rebuilt. */
 	| "STATE_CORRUPT"
 	/** Authoritative state was written by a newer BRN and cannot be downgraded. */

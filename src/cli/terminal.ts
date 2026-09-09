@@ -22,7 +22,7 @@ import {
 	TuiMainScreen,
 } from "@earendil-works/pi-tui";
 import type { ModelId, Operation } from "../core/conversation.ts";
-import { isBrnError } from "../core/errors.ts";
+import { BrnError, isBrnError } from "../core/errors.ts";
 import type { Snapshot } from "../protocol/contracts.ts";
 import type { Client } from "./client.ts";
 import {
@@ -100,6 +100,19 @@ function isUncertain(error: unknown): boolean {
 }
 
 /**
+ * The real terminal device, refused when standard input is not a terminal.
+ *
+ * This client reads raw-mode keystrokes, which a pipe cannot deliver: attaching
+ * to one would wait for input that can never arrive. A hang is the worst
+ * available diagnostic, so a non-interactive stdin is a named failure with the
+ * scriptable route named alongside it.
+ */
+function processTerminal(): Terminal {
+	if (process.stdin.isTTY !== true) throw new BrnError("NOT_A_TERMINAL");
+	return new ProcessTerminal();
+}
+
+/**
  * Attaches an interactive client and returns when it detaches.
  *
  * Detaching is the only thing this function ever does to the service's work: it
@@ -120,7 +133,7 @@ export async function runTerminal(
 			noMatch: (text) => text,
 		},
 	};
-	const tui = new TuiMainScreen(options.terminal ?? new ProcessTerminal());
+	const tui = new TuiMainScreen(options.terminal ?? processTerminal());
 	const transcript = new Text("");
 	const status = new Text("Connecting to BRN");
 	const response = new Text("");
@@ -198,7 +211,7 @@ export async function runTerminal(
 			parts.push(
 				recovery.stage === "query"
 					? `A submission's outcome is unknown. Request ${recovery.record.requestId} is retained; press Enter to look it up before any new submission.`
-					: `Request ${recovery.record.requestId} was never accepted. Press Enter to send the identical text under that same request ID.`,
+					: `Request ${recovery.record.requestId} was never accepted. Press Enter to send the identical text under that same request ID — editing the editor first does not change what is sent, and anything you type instead is kept rather than submitted.`,
 			);
 		}
 		status.setText(parts.join("\n"));
@@ -329,11 +342,26 @@ export async function runTerminal(
 		current: Recovery,
 	): Promise<void> {
 		if (current.stage === "retry") {
+			// Pi's editor cleared itself before this handler ran, so `typed` is whatever
+			// the user had on screen. When it is no longer the retained record's text,
+			// the retry still sends the record — a new request ID would be a new paid
+			// operation — but the keystrokes that were on screen are put back and
+			// echoed, so nothing the user typed disappears without a word.
+			const edited = typed !== current.record.text;
 			try {
 				// The identical text under the identical identifier: proven safe by the
 				// lookup that found nothing.
 				await submit(current.record);
 				recovery = null;
+				if (edited) {
+					restore(typed);
+					// The restored text belongs to the conversation it was composed
+					// against, so the session-change guard keeps applying to it.
+					composedSessionId = sessionId();
+					append(
+						`The text that was in the editor is not what request ${current.record.requestId} carried, so it was not submitted: the retry sent the retained text under its own request ID. Your text is kept in the editor and is repeated here so it cannot be lost:\n${safeTerminalText(typed)}`,
+					);
+				}
 			} catch (error) {
 				restore(typed);
 				append(describeFailure(error, client.stateDir));

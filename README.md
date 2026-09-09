@@ -91,7 +91,19 @@ If a submission's outcome is unknown — the connection died with the request in
 flight — the client keeps that exact submission, shows its request ID, and looks
 that ID up before it will send anything new. Only a lookup that proves the
 service never admitted it allows the identical text to be sent again under the
-same ID. A new request ID would be a new paid operation.
+same ID. A new request ID would be a new paid operation. If you type something
+different while that retry is offered, the retry still sends the retained text
+under its retained ID — and what you typed is kept in the editor and repeated in
+the transcript rather than discarded.
+
+`chat` needs an interactive terminal. Given a pipe or a redirect it refuses with
+`NOT_A_TERMINAL` and names `prompt --request-id UUID --text TEXT`, the scriptable
+route, rather than waiting for keystrokes that can never arrive.
+
+While an operation is in flight the status line reports the engine's own status,
+and compaction is worded differently from ordinary work: a screen that is silent
+because history is being compacted does not look like one that is producing an
+answer.
 
 Ctrl+C while work is shown requests cancellation of exactly the operation on
 screen and waits for it to settle; it never signals the service process. Ctrl+C
