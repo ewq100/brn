@@ -29,6 +29,10 @@ const ZERO_USAGE: Usage = {
 	totalTokens: 0,
 };
 
+/** The conversation the engine is seated in before a test changes it. */
+export const FAKE_SESSION_ID = "session-1";
+export const FAKE_MODEL: ModelId = { provider: "test", id: "offline" };
+
 interface PendingRun {
 	readonly emit: (event: EngineEvent) => void;
 	readonly settle: (result: RunResult) => void;
@@ -50,11 +54,11 @@ export class FakeEngine implements ConversationEngine {
 	closed = false;
 
 	private session: SessionInfo | null = {
-		id: "session-1",
-		model: { provider: "test", id: "offline" },
+		id: FAKE_SESSION_ID,
+		model: { ...FAKE_MODEL },
 	};
 	private context: ContextUsage = null;
-	private readonly available: ModelId[] = [{ provider: "test", id: "offline" }];
+	private readonly available: ModelId[] = [{ ...FAKE_MODEL }];
 	private readonly results = new Map<string, string>();
 	private pending: PendingRun | null = null;
 	/**

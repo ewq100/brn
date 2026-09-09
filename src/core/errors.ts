@@ -16,6 +16,10 @@ export type BrnErrorCode =
 	| "ORIGIN_OR_HOST_DENIED"
 	/** No route matches the request method and target. */
 	| "NOT_FOUND"
+	/** The request body is not the well-formed document this route accepts. */
+	| "INVALID_REQUEST"
+	/** The request body was sent as a media type this route does not accept. */
+	| "UNSUPPORTED_CONTENT_TYPE"
 	/** The service is starting up or shutting down and accepts no work. */
 	| "NOT_READY"
 	/** No discovery document exists, so no service is running in this state directory. */

@@ -4,7 +4,11 @@ import { open, rename, rm, unlink } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
+import type { ConversationEngine } from "../core/conversation.ts";
+import { isBrnError } from "../core/errors.ts";
 import { errnoOf, MANAGED_FILE_MODE } from "../core/fs.ts";
+import { createOperations } from "../core/operations.ts";
+import { createSnapshotHub, type SnapshotHub } from "./events.ts";
 import { syncDirectory } from "./fs.ts";
 import { createRequestHandler } from "./http.ts";
 import { logError, logInfo } from "./log.ts";
@@ -43,6 +47,47 @@ export interface RunningService {
 	/** The bound loopback authority, `127.0.0.1:<port>`. */
 	readonly host: string;
 	close(): Promise<void>;
+}
+
+/** A composed conversation engine and the facilities it owns. */
+export interface ComposedEngine {
+	readonly engine: ConversationEngine;
+	/** Closes whatever hosts the engine, after the engine itself has closed. */
+	close(): Promise<void>;
+}
+
+/**
+ * Constructor-only composition.
+ *
+ * `engine` exists so the test composition entry can seat a deterministic engine.
+ * It is a function argument, not an HTTP parameter, an environment variable or a
+ * command-line flag of the production entry point: no production path can select
+ * anything other than the Pi adapter.
+ */
+export interface ServiceComposition {
+	readonly engine?: (context: {
+		readonly root: string;
+		readonly store: ServiceStore;
+	}) => Promise<ComposedEngine>;
+	/** Test-only shortening of the operation deadline. */
+	readonly deadlineMs?: number;
+}
+
+async function composePiEngine(context: {
+	root: string;
+	store: ServiceStore;
+}): Promise<ComposedEngine> {
+	// The shared model runtime, settings and resource loader open once and live as
+	// long as the process. No conversation exists and no model is chosen yet: that
+	// waits for an explicit control.
+	const piHost: PiHost = await openPiRuntime({
+		root: context.root,
+		store: context.store,
+	});
+	// The conversation seam the operation coordinator drives. It adds no state of
+	// its own: the host owns the conversation, and closing the engine only settles
+	// a run that is still in flight.
+	return { engine: createPiConversation(piHost), close: () => piHost.close() };
 }
 
 async function listen(server: Server): Promise<AddressInfo> {
@@ -161,9 +206,9 @@ async function withdrawDiscovery(
  * finds unfinished is reported as interrupted. A restart never replays a provider
  * request: recovery records what was lost and stops there.
  */
-export async function startService(options: {
-	stateDir: string;
-}): Promise<RunningService> {
+export async function startService(
+	options: { stateDir: string } & ServiceComposition,
+): Promise<RunningService> {
 	process.umask(0o077);
 	proveFts5();
 
@@ -188,26 +233,75 @@ export async function startService(options: {
 		throw error;
 	}
 
-	// The shared model runtime, settings and resource loader open once and live as
-	// long as the process. No conversation exists and no model is chosen yet: that
-	// waits for an explicit control.
-	let piHost: PiHost;
+	let composed: ComposedEngine;
 	try {
-		piHost = await openPiRuntime({ root: ownership.root, store });
+		composed = await (options.engine ?? composePiEngine)({
+			root: ownership.root,
+			store,
+		});
 	} catch (error) {
 		store.close();
 		ownership.release();
 		throw error;
 	}
-	// The conversation seam the operation coordinator drives. It adds no state of
-	// its own: the host owns the conversation, and closing the engine only settles
-	// a run that is still in flight.
-	const engine = createPiConversation(piHost);
+	const engine = composed.engine;
 
 	const instanceId = randomUUID();
 	const token = randomBytes(TOKEN_BYTES).toString("base64url");
 	let expected = { host: "", token };
 	let ready = false;
+
+	// The coordinator and the snapshot hub are two halves of one seam: every
+	// coordinator mutation announces a change, and the hub rebuilds the
+	// authoritative snapshot from live state before publishing it. The hub is
+	// created second because it reads the coordinator's view, so the announcement
+	// goes through a reference that is filled in by then.
+	let hub: SnapshotHub | null = null;
+	const operations = createOperations({
+		store,
+		engine,
+		onChange: () => hub?.changed(),
+		...(options.deadlineMs === undefined
+			? {}
+			: { deadlineMs: options.deadlineMs }),
+	});
+	hub = createSnapshotHub({
+		instanceId,
+		conversation: () => engine.snapshot(),
+		work: () => operations.view(),
+	});
+	const snapshots = hub;
+
+	/**
+	 * Stops accepted work, then closes the conversation, its host and the ledger,
+	 * and releases ownership last.
+	 *
+	 * `operations.stop()` can reject when an authoritative write was lost. That
+	 * report must survive, but it must not skip the rest of the teardown, so it
+	 * runs inside its own `try` with everything else in the `finally`. The engine
+	 * closes strictly before its host, because settling an in-flight run needs the
+	 * host's runtime alive.
+	 */
+	async function shutDown(): Promise<void> {
+		try {
+			await operations.stop();
+		} finally {
+			snapshots.close();
+			try {
+				await engine.close();
+			} finally {
+				try {
+					await composed.close();
+				} finally {
+					try {
+						store.close();
+					} finally {
+						ownership.release();
+					}
+				}
+			}
+		}
+	}
 
 	const server = createServer(
 		createRequestHandler({
@@ -215,6 +309,7 @@ export async function startService(options: {
 			pid: process.pid,
 			expected: () => expected,
 			ready: () => ready,
+			domain: { engine, operations, store, hub: snapshots },
 		}),
 	);
 	server.headersTimeout = HEADERS_TIMEOUT_MS;
@@ -238,19 +333,13 @@ export async function startService(options: {
 		ready = false;
 		server.close();
 		server.closeAllConnections();
-		try {
-			await engine.close();
-		} finally {
-			try {
-				await piHost.close();
-			} finally {
-				try {
-					store.close();
-				} finally {
-					ownership.release();
-				}
-			}
-		}
+		await shutDown().catch((failure: unknown) => {
+			// The start failure below is the report; a teardown failure on this path
+			// must not replace it, but it may not vanish either.
+			logError("service.shutdown_failed", {
+				code: isBrnError(failure) ? failure.code : "INTERNAL_ERROR",
+			});
+		});
 		throw error;
 	}
 
@@ -270,24 +359,10 @@ export async function startService(options: {
 				});
 				await withdrawDiscovery(ownership.root, instanceId);
 			} finally {
-				// Shutdown reverses startup: the engine stops driving a run, the
-				// conversation host settles and the ledger closes before ownership is
-				// released, so no second writer can appear while any of them is still
-				// open. Every step runs even when an earlier one fails, and the
-				// ownership release stays last.
-				try {
-					await engine.close();
-				} finally {
-					try {
-						await piHost.close();
-					} finally {
-						try {
-							store.close();
-						} finally {
-							ownership.release();
-						}
-					}
-				}
+				// Shutdown reverses startup: accepted work stops, the conversation and
+				// its host settle and the ledger closes before ownership is released, so
+				// no second writer can appear while any of them is still open.
+				await shutDown();
 			}
 		},
 	};

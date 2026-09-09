@@ -1,9 +1,14 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdtemp, readFile, realpath } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
-import { connect } from "node:net";
+import { connect as connectSocket } from "node:net";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { type Client, connect } from "../../src/cli/client.ts";
+import type { PromptCommand } from "../../src/core/conversation.ts";
+import { FAKE_MODEL, FAKE_SESSION_ID } from "./fake-engine.ts";
 
 const supportDirectory = dirname(fileURLToPath(import.meta.url));
 const serviceChild = join(supportDirectory, "service-child.ts");
@@ -30,6 +35,12 @@ export async function readDiscovery(root: string): Promise<Discovery> {
 export interface RequestOptions {
 	/** Send no `Authorization` header at all. */
 	auth?: boolean;
+	/** Request body, sent as `application/json; charset=utf-8` unless overridden. */
+	body?: string | Uint8Array;
+	/** Content type for `body`; `null` sends no `Content-Type` header at all. */
+	contentType?: string | null;
+	/** Send the body without a declared length, as a chunked request. */
+	chunked?: boolean;
 	/** Override the bearer token that would otherwise come from discovery. */
 	token?: string;
 	method?: string;
@@ -57,6 +68,24 @@ export interface SpawnServiceOptions {
 	expectReady?: boolean;
 	/** Value passed to `--state-dir`; defaults to `root`. */
 	stateDir?: string;
+	/**
+	 * Compose the test-only deterministic engine instead of the Pi adapter. The
+	 * switch lives in the test composition entry's own arguments: no production
+	 * argument, environment variable or endpoint can select it.
+	 */
+	fakeEngine?: boolean;
+}
+
+/** One control message for the test-only engine, answered over IPC. */
+export interface FakeCommand {
+	readonly action:
+		| "callCount"
+		| "complete"
+		| "fail"
+		| "emit"
+		| "running"
+		| "awaitRunning";
+	readonly text?: string;
 }
 
 export interface ServiceHandle {
@@ -71,6 +100,8 @@ export interface ServiceHandle {
 	request(path: string, options?: RequestOptions): Promise<ServiceResponse>;
 	/** Sends a byte-exact request so duplicate headers survive to the server. */
 	rawRequest(lines: readonly string[]): Promise<RawResponse>;
+	/** Drives the test-only engine over IPC. Only valid with `fakeEngine`. */
+	fake(command: FakeCommand): Promise<unknown>;
 	close(): Promise<void>;
 }
 
@@ -85,7 +116,9 @@ export async function spawnService(
 	options: SpawnServiceOptions = {},
 ): Promise<ServiceHandle> {
 	const stateDir = options.stateDir ?? root;
-	const child = spawn(nodeBinary, [serviceChild, "--state-dir", stateDir], {
+	const childArguments = [serviceChild, "--state-dir", stateDir];
+	if (options.fakeEngine === true) childArguments.push("--fake-engine");
+	const child = spawn(nodeBinary, childArguments, {
 		stdio: ["ignore", "pipe", "pipe", "ipc"],
 	});
 
@@ -137,6 +170,25 @@ export async function spawnService(
 	if (pid === undefined)
 		throw new Error(`service failed to spawn: ${output()}`);
 
+	// Control messages for the test-only engine are correlated by id so several
+	// may be in flight without one reply being mistaken for another.
+	let nextCommandId = 0;
+	const pendingCommands = new Map<number, (value: unknown) => void>();
+	child.on("message", (message) => {
+		if (
+			typeof message !== "object" ||
+			message === null ||
+			!("type" in message) ||
+			(message as { type: unknown }).type !== "fake-reply"
+		) {
+			return;
+		}
+		const reply = message as unknown as { id: number; value: unknown };
+		const settle = pendingCommands.get(reply.id);
+		pendingCommands.delete(reply.id);
+		settle?.(reply.value);
+	});
+
 	const handle: ServiceHandle = {
 		pid,
 		ready,
@@ -152,6 +204,20 @@ export async function spawnService(
 				headers.Authorization = `Bearer ${requestOptions.token ?? discovery.token}`;
 			}
 			if (requestOptions.host !== undefined) headers.Host = requestOptions.host;
+			const payload = requestOptions.body;
+			if (payload !== undefined) {
+				if (requestOptions.contentType !== null) {
+					headers["Content-Type"] =
+						requestOptions.contentType ?? "application/json; charset=utf-8";
+				}
+				if (requestOptions.chunked !== true) {
+					headers["Content-Length"] = String(
+						typeof payload === "string"
+							? Buffer.byteLength(payload, "utf8")
+							: payload.byteLength,
+					);
+				}
+			}
 			Object.assign(headers, requestOptions.headers ?? {});
 			const [hostname = "127.0.0.1", port = "0"] = discovery.host.split(":");
 			return await new Promise<ServiceResponse>((resolve, reject) => {
@@ -160,7 +226,8 @@ export async function spawnService(
 						hostname,
 						port: Number(port),
 						path: `${path}${requestOptions.query ?? ""}`,
-						method: requestOptions.method ?? "GET",
+						method:
+							requestOptions.method ?? (payload === undefined ? "GET" : "POST"),
 						headers,
 						timeout: REQUEST_TIMEOUT_MS,
 					},
@@ -181,7 +248,10 @@ export async function spawnService(
 					clientRequest.destroy(new Error("request timed out"));
 				});
 				clientRequest.on("error", reject);
-				clientRequest.end();
+				if (payload === undefined) clientRequest.end();
+				else if (typeof payload === "string")
+					clientRequest.end(payload, "utf8");
+				else clientRequest.end(Buffer.from(payload));
 			});
 		},
 		async rawRequest(lines) {
@@ -189,9 +259,12 @@ export async function spawnService(
 			const [hostname = "127.0.0.1", port = "0"] = discovery.host.split(":");
 			const payload = `${lines.join("\r\n")}\r\n\r\n`;
 			return await new Promise<RawResponse>((resolve, reject) => {
-				const socket = connect({ host: hostname, port: Number(port) }, () => {
-					socket.end(payload);
-				});
+				const socket = connectSocket(
+					{ host: hostname, port: Number(port) },
+					() => {
+						socket.end(payload);
+					},
+				);
 				socket.setTimeout(REQUEST_TIMEOUT_MS, () => {
 					socket.destroy(new Error("raw request timed out"));
 				});
@@ -206,6 +279,28 @@ export async function spawnService(
 						status: match?.[1] === undefined ? 0 : Number(match[1]),
 						raw,
 					});
+				});
+			});
+		},
+		async fake(command) {
+			nextCommandId += 1;
+			const id = nextCommandId;
+			return await new Promise<unknown>((resolve, reject) => {
+				const timer = setTimeout(() => {
+					pendingCommands.delete(id);
+					reject(new Error(`fake ${command.action} timed out: ${output()}`));
+				}, REQUEST_TIMEOUT_MS);
+				timer.unref();
+				pendingCommands.set(id, (value) => {
+					clearTimeout(timer);
+					resolve(value);
+				});
+				child.send({ type: "fake", id, ...command }, (error) => {
+					if (error) {
+						clearTimeout(timer);
+						pendingCommands.delete(id);
+						reject(error);
+					}
 				});
 			});
 		},
@@ -250,4 +345,94 @@ export function differentTokenOfSameLength(token: string): string {
 	return [...token]
 		.map((character) => (character === "a" ? "b" : "a"))
 		.join("");
+}
+
+/**
+ * A spawned service composed with the deterministic engine, plus an attached
+ * real client.
+ *
+ * Everything here runs over real sockets against a real child process: the only
+ * substitution is the conversation engine, and it is selected by the test
+ * composition entry's own argument.
+ */
+export interface FakeServiceHandle {
+	readonly root: string;
+	/** The raw process handle, for header-level and raw-socket cases. */
+	readonly service: ServiceHandle;
+	/** The attached client. `reconnect()` replaces it. */
+	readonly client: Client;
+	/** Builds a prompt for the deterministic engine's seated session and model. */
+	prompt(text: string, overrides?: Partial<PromptCommand>): PromptCommand;
+	/** Waits for the engine to be running, then completes it with a durable answer. */
+	completeFake(text: string): Promise<void>;
+	/** Waits for the engine to be running, then fails it, keeping partial text. */
+	failFake(partialText?: string): Promise<void>;
+	/** Streams live text from the engine without recording a durable entry. */
+	emitFake(text: string): Promise<void>;
+	/** How many prompts the engine was actually asked to run. */
+	fakeCallCount(): Promise<number>;
+	/** Attaches a fresh client, re-reading discovery. */
+	reconnect(): Promise<Client>;
+	close(): Promise<void>;
+}
+
+export async function spawnServiceWithFake(
+	options: { root?: string } = {},
+): Promise<FakeServiceHandle> {
+	const root =
+		options.root ??
+		(await mkdtemp(join(await realpath(tmpdir()), "brn-service-")));
+	const service = await spawnService(root, { fakeEngine: true });
+	const clients: Client[] = [await connect(root)];
+
+	const handle: FakeServiceHandle = {
+		root,
+		service,
+		get client() {
+			const current = clients.at(-1);
+			if (current === undefined) throw new Error("no attached client");
+			return current;
+		},
+		prompt(text, overrides = {}) {
+			return {
+				requestId: randomUUID(),
+				sessionId: FAKE_SESSION_ID,
+				model: { ...FAKE_MODEL },
+				text,
+				...overrides,
+			};
+		},
+		async completeFake(text) {
+			await service.fake({ action: "awaitRunning" });
+			await service.fake({ action: "complete", text });
+		},
+		async failFake(partialText) {
+			await service.fake({ action: "awaitRunning" });
+			await service.fake(
+				partialText === undefined
+					? { action: "fail" }
+					: { action: "fail", text: partialText },
+			);
+		},
+		async emitFake(text) {
+			await service.fake({ action: "awaitRunning" });
+			await service.fake({ action: "emit", text });
+		},
+		async fakeCallCount() {
+			const value = await service.fake({ action: "callCount" });
+			if (typeof value !== "number")
+				throw new Error("fake did not report a call count");
+			return value;
+		},
+		async reconnect() {
+			const client = await connect(root);
+			clients.push(client);
+			return client;
+		},
+		async close() {
+			for (const client of clients) await client.disconnect();
+			await service.close();
+		},
+	};
+	return handle;
 }

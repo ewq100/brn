@@ -2,7 +2,11 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { BrnError, isBrnError } from "../core/errors.ts";
 import { logError, logInfo } from "./log.ts";
-import { type RunningService, startService } from "./start.ts";
+import {
+	type RunningService,
+	type ServiceComposition,
+	startService,
+} from "./start.ts";
 
 const STATE_DIR_FLAG = "--state-dir";
 
@@ -36,10 +40,16 @@ async function runUntilSignalled(service: RunningService): Promise<void> {
  * process exit code. The service is started explicitly and never daemonises; a
  * client attaching to it cannot start or inherit it.
  */
-export async function runService(argv: readonly string[]): Promise<number> {
+export async function runService(
+	argv: readonly string[],
+	composition: ServiceComposition = {},
+): Promise<number> {
 	let service: RunningService;
 	try {
-		service = await startService({ stateDir: parseStateDir(argv) });
+		service = await startService({
+			stateDir: parseStateDir(argv),
+			...composition,
+		});
 	} catch (error) {
 		logError("service.start_failed", {
 			code: isBrnError(error) ? error.code : "INTERNAL_ERROR",

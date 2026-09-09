@@ -12,6 +12,7 @@ import {
 	runCli,
 	type ServiceHandle,
 	spawnService,
+	spawnServiceWithFake,
 } from "./support/process.ts";
 
 async function makeRoot(prefix: string): Promise<string> {
@@ -325,4 +326,348 @@ test("an unmapped internal fault is opaque on the wire but logged", () => {
 	// The log line carries a fixed code only: no message, path, token or PID.
 	expect(log).not.toContain("secret detail");
 	expect(log).not.toContain(".brn/default");
+});
+
+test("a disconnected submitter does not cancel accepted work", async () => {
+	const service = await spawnServiceWithFake();
+	try {
+		const accepted = await service.client.submit(
+			service.prompt("slow synthetic"),
+		);
+		await service.client.disconnect();
+		await service.completeFake("saved once");
+		const reconnected = await service.reconnect();
+		expect((await reconnected.operation(accepted.id)).state).toBe("succeeded");
+		expect(await reconnected.result(accepted.id)).toEqual({
+			text: "saved once",
+			truncated: false,
+		});
+		expect(await service.fakeCallCount()).toBe(1);
+	} finally {
+		await service.close();
+	}
+});
+
+test("a lost submission response is recovered by repeating the identical request", async () => {
+	const service = await spawnServiceWithFake();
+	try {
+		const command = service.prompt("only once");
+		const body = JSON.stringify(command);
+		const first = await service.service.request("/v1/operations", { body });
+		expect(first.status).toBe(202);
+		// The client never saw that response and repeats the identical request.
+		const repeated = await service.service.request("/v1/operations", { body });
+		expect(repeated.status).toBe(200);
+		expect(JSON.parse(repeated.text).id).toBe(JSON.parse(first.text).id);
+
+		const changed = await service.service.request("/v1/operations", {
+			body: JSON.stringify({ ...command, text: "something else" }),
+		});
+		expect(changed.status).toBe(409);
+		expect(JSON.parse(changed.text).error.code).toBe("REQUEST_ID_REUSED");
+
+		await service.completeFake("only once");
+		expect(await service.fakeCallCount()).toBe(1);
+		// The changed payload mutated nothing: the original record still stands.
+		const original = await service.client.operation(command.requestId);
+		expect(original.state).toBe("succeeded");
+	} finally {
+		await service.close();
+	}
+});
+
+test("submission rejects a malformed, oversized or unsupported body", async () => {
+	const service = await spawnServiceWithFake();
+	try {
+		const command = service.prompt("ok");
+		const cases: readonly {
+			readonly name: string;
+			readonly status: number;
+			readonly options: RequestOptions;
+		}[] = [
+			{
+				name: "malformed JSON",
+				status: 400,
+				options: { body: "{" },
+			},
+			{
+				name: "an extra field",
+				status: 400,
+				options: { body: JSON.stringify({ ...command, extra: true }) },
+			},
+			{
+				name: "a non-UUID request id",
+				status: 400,
+				options: { body: JSON.stringify({ ...command, requestId: "1" }) },
+			},
+			{
+				name: "an empty prompt",
+				status: 400,
+				options: { body: JSON.stringify({ ...command, text: "" }) },
+			},
+			{
+				name: "an unsupported content type",
+				status: 400,
+				options: { body: JSON.stringify(command), contentType: "text/plain" },
+			},
+			{
+				name: "no content type",
+				status: 400,
+				options: { body: JSON.stringify(command), contentType: null },
+			},
+			{
+				name: "invalid UTF-8",
+				status: 400,
+				options: {
+					// `{"a":"<0x80>"}`: a lone continuation byte, which strict decoding
+					// must refuse instead of substituting.
+					body: new Uint8Array([
+						0x7b, 0x22, 0x61, 0x22, 0x3a, 0x22, 0x80, 0x22, 0x7d,
+					]),
+				},
+			},
+			{
+				name: "an oversized declared length",
+				status: 413,
+				options: { body: `{"pad":"${"a".repeat(200 * 1024)}"}` },
+			},
+			{
+				name: "an oversized chunked body",
+				status: 413,
+				options: {
+					body: `{"pad":"${"a".repeat(200 * 1024)}"}`,
+					chunked: true,
+				},
+			},
+			{
+				name: "a prompt whose bytes exceed the limit",
+				status: 413,
+				options: {
+					// Inside the schema's character limit, over the UTF-8 byte limit.
+					body: JSON.stringify({ ...command, text: "\u00e9".repeat(16000) }),
+				},
+			},
+		];
+		for (const testCase of cases) {
+			const response = await service.service.request(
+				"/v1/operations",
+				testCase.options,
+			);
+			expect(
+				{ name: testCase.name, status: response.status },
+				testCase.name,
+			).toEqual({ name: testCase.name, status: testCase.status });
+			expect(response.text).not.toContain(service.root);
+		}
+		expect(await service.fakeCallCount()).toBe(0);
+	} finally {
+		await service.close();
+	}
+});
+
+test("the coordinated routes report models, sessions and busy work", async () => {
+	const service = await spawnServiceWithFake();
+	try {
+		const models = await service.service.request("/v1/models");
+		expect(models.status).toBe(200);
+		expect(JSON.parse(models.text)).toEqual({
+			models: [{ provider: "test", id: "offline" }],
+		});
+
+		const sessions = await service.service.request("/v1/sessions");
+		expect(sessions.status).toBe(200);
+		expect(JSON.parse(sessions.text).sessions).toEqual([
+			{ id: "session-1", model: { provider: "test", id: "offline" } },
+		]);
+
+		const accepted = await service.client.submit(service.prompt("occupying"));
+		// One accepted operation at a time: everything that needs the seat is
+		// refused visibly rather than queued.
+		expect(
+			(
+				await service.service.request("/v1/sessions", {
+					body: JSON.stringify({ model: { provider: "test", id: "offline" } }),
+				})
+			).status,
+		).toBe(409);
+		expect(
+			(
+				await service.service.request("/v1/model", {
+					body: JSON.stringify({ model: { provider: "test", id: "offline" } }),
+				})
+			).status,
+		).toBe(409);
+		expect(
+			(
+				await service.service.request("/v1/sessions/resume", {
+					body: JSON.stringify({ sessionId: "session-1" }),
+				})
+			).status,
+		).toBe(409);
+		const second = await service.service.request("/v1/operations", {
+			body: JSON.stringify(service.prompt("second")),
+		});
+		expect(second.status).toBe(409);
+		expect(JSON.parse(second.text).error.code).toBe("BUSY");
+		// A result is not readable until the work it belongs to settles.
+		expect(
+			(await service.service.request(`/v1/operations/${accepted.id}/result`))
+				.status,
+		).toBe(409);
+
+		await service.completeFake("done");
+		expect((await service.client.operation(accepted.id)).state).toBe(
+			"succeeded",
+		);
+		expect(await service.client.result(accepted.id)).toEqual({
+			text: "done",
+			truncated: false,
+		});
+	} finally {
+		await service.close();
+	}
+});
+
+test("a session or model change takes the control seat and reports the seated session", async () => {
+	const service = await spawnServiceWithFake();
+	try {
+		const created = await service.service.request("/v1/sessions", {
+			body: JSON.stringify({ model: { provider: "test", id: "offline" } }),
+		});
+		expect(created.status).toBe(201);
+		expect(JSON.parse(created.text)).toEqual({
+			id: "session-2",
+			model: { provider: "test", id: "offline" },
+		});
+
+		const resumed = await service.service.request("/v1/sessions/resume", {
+			body: JSON.stringify({ sessionId: "session-1" }),
+		});
+		expect(resumed.status).toBe(200);
+		expect(JSON.parse(resumed.text).id).toBe("session-1");
+
+		const selected = await service.service.request("/v1/model", {
+			body: JSON.stringify({ model: { provider: "test", id: "offline" } }),
+		});
+		expect(selected.status).toBe(200);
+		expect(JSON.parse(selected.text).model).toEqual({
+			provider: "test",
+			id: "offline",
+		});
+
+		// A session identifier is opaque and bounded: BRN passes it to the
+		// conversation host as data, and never resolves it as a path here. The
+		// deterministic engine echoes it back unchanged, which is the point.
+		const traversal = await service.service.request("/v1/sessions/resume", {
+			body: JSON.stringify({ sessionId: "../../etc/passwd" }),
+		});
+		expect(traversal.status).toBe(200);
+		expect(JSON.parse(traversal.text).id).toBe("../../etc/passwd");
+
+		// Bounded: an identifier longer than the contract allows is malformed input.
+		const oversized = await service.service.request("/v1/sessions/resume", {
+			body: JSON.stringify({ sessionId: "s".repeat(257) }),
+		});
+		expect(oversized.status).toBe(400);
+	} finally {
+		await service.close();
+	}
+});
+
+test("an unknown operation is not found and a stale session mismatch is a conflict", async () => {
+	const service = await spawnServiceWithFake();
+	try {
+		const unknown = "00000000-0000-4000-8000-0000000000ff";
+		expect(
+			(await service.service.request(`/v1/operations/${unknown}`)).status,
+		).toBe(404);
+		expect(
+			(await service.service.request(`/v1/operations/${unknown}/result`))
+				.status,
+		).toBe(404);
+		expect(
+			(
+				await service.service.request(`/v1/operations/${unknown}/cancel`, {
+					body: JSON.stringify({ confirmed: true }),
+				})
+			).status,
+		).toBe(404);
+		// An identifier that is not even shaped like one is malformed input.
+		expect(
+			(await service.service.request("/v1/operations/not-an-id")).status,
+		).toBe(400);
+
+		const mismatch = await service.service.request("/v1/operations", {
+			body: JSON.stringify(
+				service.prompt("wrong session", {
+					sessionId: "session-9",
+				}),
+			),
+		});
+		expect(mismatch.status).toBe(409);
+		expect(JSON.parse(mismatch.text).error.code).toBe("SESSION_MISMATCH");
+
+		const wrongModel = await service.service.request("/v1/operations", {
+			body: JSON.stringify(
+				service.prompt("wrong model", {
+					model: { provider: "test", id: "other" },
+				}),
+			),
+		});
+		expect(wrongModel.status).toBe(409);
+		expect(JSON.parse(wrongModel.text).error.code).toBe("MODEL_MISMATCH");
+	} finally {
+		await service.close();
+	}
+});
+
+test("cancellation is explicit and repeating it is harmless", async () => {
+	const service = await spawnServiceWithFake();
+	try {
+		const accepted = await service.client.submit(service.prompt("cancel me"));
+		const unconfirmed = await service.service.request(
+			`/v1/operations/${accepted.id}/cancel`,
+			{ body: JSON.stringify({ confirmed: false }) },
+		);
+		expect(unconfirmed.status).toBe(400);
+
+		const cancelled = await service.service.request(
+			`/v1/operations/${accepted.id}/cancel`,
+			{ body: JSON.stringify({ confirmed: true }) },
+		);
+		expect(cancelled.status).toBe(200);
+		expect(JSON.parse(cancelled.text).state).toBe("cancelled");
+
+		const again = await service.service.request(
+			`/v1/operations/${accepted.id}/cancel`,
+			{ body: JSON.stringify({ confirmed: true }) },
+		);
+		expect(again.status).toBe(200);
+		expect(JSON.parse(again.text).state).toBe("cancelled");
+	} finally {
+		await service.close();
+	}
+});
+
+test("shutdown stops accepted work, records it and releases ownership last", async () => {
+	const service = await spawnServiceWithFake();
+	const accepted = await service.client.submit(service.prompt("still running"));
+	await service.service.fake({ action: "awaitRunning" });
+
+	// The whole chain runs here: the coordinator stops accepted work, the engine
+	// and its host close, the ledger closes, and only then is ownership released.
+	service.service.signal("SIGTERM");
+	expect(await service.service.exit).toBe(0);
+	await service.client.disconnect();
+
+	// A second owner can only start because the lock was released, and it can only
+	// read this outcome because the ledger committed before it closed.
+	const restarted = await spawnServiceWithFake({ root: service.root });
+	try {
+		const settled = await restarted.client.operation(accepted.id);
+		expect(settled.state).toBe("cancelled");
+		expect(restarted.service.output()).not.toContain("shutdown_failed");
+	} finally {
+		await restarted.close();
+	}
 });

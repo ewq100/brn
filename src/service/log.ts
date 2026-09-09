@@ -7,8 +7,9 @@
  * discovery documents must never reach this module.
  */
 
-export type LogValue = string | number | boolean;
+import { randomUUID } from "node:crypto";
 
+export type LogValue = string | number | boolean;
 export type LogFields = Readonly<Record<string, LogValue | undefined>>;
 
 function emit(level: "info" | "error", event: string, fields: LogFields): void {
@@ -29,4 +30,15 @@ export function logInfo(event: string, fields: LogFields = {}): void {
 
 export function logError(event: string, fields: LogFields = {}): void {
 	emit("error", event, fields);
+}
+
+/**
+ * A fresh identifier for one unexplained internal fault.
+ *
+ * It correlates a log record with a single request without describing anything
+ * about it. It is the only new information such a record carries: the message,
+ * stack, path and any request content stay out.
+ */
+export function newDiagnosticId(): string {
+	return randomUUID();
 }
