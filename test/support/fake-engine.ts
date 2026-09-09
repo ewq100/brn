@@ -33,6 +33,9 @@ const ZERO_USAGE: Usage = {
 export const FAKE_SESSION_ID = "session-1";
 export const FAKE_MODEL: ModelId = { provider: "test", id: "offline" };
 
+/** The reasons a run may report as a failed outcome. */
+export type FailedCode = Extract<RunResult, { kind: "failed" }>["code"];
+
 interface PendingRun {
 	readonly emit: (event: EngineEvent) => void;
 	readonly settle: (result: RunResult) => void;
@@ -187,14 +190,14 @@ export class FakeEngine implements ConversationEngine {
 	}
 
 	/** Fails the run, keeping any partial entry durable. */
-	fail(partialText?: string): void {
+	fail(partialText?: string, code: FailedCode = "PROVIDER_ERROR"): void {
 		const pending = this.pending;
 		if (pending === null) return;
 		if (partialText !== undefined) this.record(partialText);
 		this.pending = null;
 		pending.settle({
 			kind: "failed",
-			code: "PROVIDER_ERROR",
+			code,
 			entryIds: [...this.entryIds],
 		});
 	}

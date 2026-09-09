@@ -482,3 +482,49 @@ test("a writer whose queue passes the ceiling loses its stream, not its work", (
 	expect(written.length).toBe(delivered);
 	hub.close();
 });
+
+/** A ceiling small enough that any real queueing at all passes it. */
+const SMALL_CEILING_BYTES = 1024;
+
+test("a real connection that never reads loses its stream at the ceiling", async () => {
+	// The whole path is real: a real child, a real socket and the real writer. Only
+	// the ceiling is lowered, through the test composition entry's own argument.
+	const service = await spawnServiceWithFake({
+		maxBufferedBytes: SMALL_CEILING_BYTES,
+	});
+	const unread = await service.service.openUnreadStream("/v1/events");
+	try {
+		const accepted = await service.client.submit(service.prompt("slow"));
+		// Each emit republishes the entire preview, so a connection nobody reads
+		// accrues far more than the kernel will absorb, while the preview itself
+		// stays under the coordinator's own 1 MiB limit.
+		for (let round = 0; round < 15; round += 1) {
+			if (service.service.output().includes("events.reader_too_slow")) break;
+			await service.emitFake("z".repeat(64 * 1024));
+			await new Promise((resolve) => setTimeout(resolve, 60));
+		}
+		expect(service.service.output()).toContain("events.reader_too_slow");
+		// The queued figure is a real `ServerResponse.writableLength`, so this is the
+		// check firing against a socket rather than against a stand-in.
+		const dropped = /"event":"events\.reader_too_slow","buffered":(\d+)/.exec(
+			service.service.output(),
+		);
+		expect(dropped).not.toBeNull();
+		expect(Number(dropped?.[1])).toBeGreaterThan(SMALL_CEILING_BYTES);
+		expect(unread.socket.destroyed).toBe(false);
+
+		// The dropped stream cost the work nothing: it finishes and is readable.
+		await service.completeFake("finished anyway");
+		expect((await service.client.operation(accepted.id)).state).toBe(
+			"succeeded",
+		);
+		expect(await service.client.result(accepted.id)).toEqual({
+			text: "finished anyway",
+			truncated: false,
+		});
+		expect(await service.fakeCallCount()).toBe(1);
+	} finally {
+		await unread.drain();
+		await service.close();
+	}
+});

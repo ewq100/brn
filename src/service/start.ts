@@ -71,6 +71,13 @@ export interface ServiceComposition {
 	}) => Promise<ComposedEngine>;
 	/** Test-only shortening of the operation deadline. */
 	readonly deadlineMs?: number;
+	/**
+	 * Test-only lowering of the event stream's queued-byte ceiling, so a real
+	 * non-reading connection can be shown to lose its stream. Like `engine`, it is
+	 * a constructor argument of this function: production's entry point passes no
+	 * composition at all.
+	 */
+	readonly maxBufferedBytes?: number;
 }
 
 async function composePiEngine(context: {
@@ -309,6 +316,9 @@ export async function startService(
 			pid: process.pid,
 			expected: () => expected,
 			ready: () => ready,
+			...(options.maxBufferedBytes === undefined
+				? {}
+				: { maxBufferedBytes: options.maxBufferedBytes }),
 			domain: { engine, operations, store, hub: snapshots },
 		}),
 	);

@@ -7,13 +7,29 @@
 // That switch exists only here. No production argument, environment variable or
 // endpoint can reach it, and the fake is never imported by `src/`.
 import { runService } from "../../src/service/main.ts";
-import { FakeEngine } from "./fake-engine.ts";
+import { type FailedCode, FakeEngine } from "./fake-engine.ts";
 
 const RUNNING_POLL_MS = 5;
 const RUNNING_TIMEOUT_MS = 5_000;
 
 const argv = process.argv.slice(2);
 const FAKE_FLAG = "--fake-engine";
+const BUFFER_FLAG = "--max-buffered-bytes";
+
+/**
+ * Reads the test-only stream ceiling from this entry's own arguments. It is
+ * passed to `runService` as a composition argument, exactly like the fake
+ * engine: production's entry point passes no composition, so no argument,
+ * environment variable or request can reach it there.
+ */
+function bufferCeiling(): number | undefined {
+	const flag = argv.indexOf(BUFFER_FLAG);
+	const value = flag === -1 ? undefined : argv[flag + 1];
+	if (value === undefined) return undefined;
+	const parsed = Number(value);
+	if (!Number.isSafeInteger(parsed) || parsed <= 0) return undefined;
+	return parsed;
+}
 
 async function awaitRunning(engine: FakeEngine): Promise<boolean> {
 	const deadline = Date.now() + RUNNING_TIMEOUT_MS;
@@ -29,6 +45,7 @@ async function apply(
 	engine: FakeEngine,
 	action: string,
 	text: string | undefined,
+	code: FailedCode | undefined,
 ): Promise<unknown> {
 	switch (action) {
 		case "callCount":
@@ -41,7 +58,7 @@ async function apply(
 			engine.complete(text ?? "");
 			return true;
 		case "fail":
-			engine.fail(text);
+			engine.fail(text, code);
 			return true;
 		case "emit":
 			engine.emitText(text ?? "");
@@ -65,8 +82,9 @@ function registerControls(engine: FakeEngine): void {
 			id: number;
 			action: string;
 			text?: string;
+			code?: FailedCode;
 		};
-		void apply(engine, command.action, command.text).then(
+		void apply(engine, command.action, command.text, command.code).then(
 			(value) => {
 				process.send?.({ type: "fake-reply", id: command.id, value });
 			},
@@ -77,14 +95,18 @@ function registerControls(engine: FakeEngine): void {
 	});
 }
 
+const ceiling = bufferCeiling();
+const composition = ceiling === undefined ? {} : { maxBufferedBytes: ceiling };
+
 if (argv.includes(FAKE_FLAG)) {
 	const engine = new FakeEngine();
 	registerControls(engine);
 	process.exitCode = await runService(argv, {
+		...composition,
 		engine: async () => ({ engine, close: async () => undefined }),
 	});
 } else {
-	process.exitCode = await runService(argv);
+	process.exitCode = await runService(argv, composition);
 }
 
 // The control listener above keeps the IPC channel referenced, which would keep

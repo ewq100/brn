@@ -193,6 +193,7 @@ test("an authenticated health response is minimal, uncacheable and CORS-free", a
 		}
 		expect(JSON.parse(response.text)).toEqual({
 			status: "ok",
+			ready: true,
 			version: 1,
 			instanceId: discovery.instanceId,
 			pid: discovery.pid,
@@ -616,6 +617,26 @@ test("an unknown operation is not found and a stale session mismatch is a confli
 		});
 		expect(wrongModel.status).toBe(409);
 		expect(JSON.parse(wrongModel.text).error.code).toBe("MODEL_MISMATCH");
+	} finally {
+		await service.close();
+	}
+});
+
+test("a run that needs credentials is a precondition the operator must satisfy", async () => {
+	const service = await spawnServiceWithFake();
+	try {
+		const accepted = await service.client.submit(service.prompt("who am i"));
+		await service.failFake(undefined, "AUTH_REQUIRED");
+		expect((await service.client.operation(accepted.id)).state).toBe("failed");
+		const result = await service.service.request(
+			`/v1/operations/${accepted.id}/result`,
+		);
+		// A conflict, like a missing model: absent credentials are not corrupt or
+		// unavailable state, and no message beyond the fixed status text is sent.
+		expect(result.status).toBe(409);
+		expect(JSON.parse(result.text)).toEqual({
+			error: { code: "AUTH_REQUIRED", message: "Conflict" },
+		});
 	} finally {
 		await service.close();
 	}

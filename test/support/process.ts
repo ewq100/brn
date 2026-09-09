@@ -2,13 +2,13 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, realpath } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
-import { connect as connectSocket } from "node:net";
+import { connect as connectSocket, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Client, connect } from "../../src/cli/client.ts";
 import type { PromptCommand } from "../../src/core/conversation.ts";
-import { FAKE_MODEL, FAKE_SESSION_ID } from "./fake-engine.ts";
+import { FAKE_MODEL, FAKE_SESSION_ID, type FailedCode } from "./fake-engine.ts";
 
 const supportDirectory = dirname(fileURLToPath(import.meta.url));
 const serviceChild = join(supportDirectory, "service-child.ts");
@@ -74,6 +74,11 @@ export interface SpawnServiceOptions {
 	 * argument, environment variable or endpoint can select it.
 	 */
 	fakeEngine?: boolean;
+	/**
+	 * Test-only event stream ceiling, passed to the child's composition entry as
+	 * an argument of its own. Nothing in production reads it.
+	 */
+	maxBufferedBytes?: number;
 }
 
 /** One control message for the test-only engine, answered over IPC. */
@@ -86,6 +91,15 @@ export interface FakeCommand {
 		| "running"
 		| "awaitRunning";
 	readonly text?: string;
+	/** The failed-run code, for `fail`. Defaults to `PROVIDER_ERROR`. */
+	readonly code?: FailedCode;
+}
+
+/** A connection that is deliberately never read from. */
+export interface UnreadStream {
+	readonly socket: Socket;
+	/** Reads whatever the server queued, so the connection can drain and close. */
+	drain(): Promise<void>;
 }
 
 export interface ServiceHandle {
@@ -100,6 +114,11 @@ export interface ServiceHandle {
 	request(path: string, options?: RequestOptions): Promise<ServiceResponse>;
 	/** Sends a byte-exact request so duplicate headers survive to the server. */
 	rawRequest(lines: readonly string[]): Promise<RawResponse>;
+	/**
+	 * Opens an authenticated request over a real socket and never reads it, so the
+	 * server's own write queue is the only place the bytes can go.
+	 */
+	openUnreadStream(path: string): Promise<UnreadStream>;
 	/** Drives the test-only engine over IPC. Only valid with `fakeEngine`. */
 	fake(command: FakeCommand): Promise<unknown>;
 	close(): Promise<void>;
@@ -118,6 +137,12 @@ export async function spawnService(
 	const stateDir = options.stateDir ?? root;
 	const childArguments = [serviceChild, "--state-dir", stateDir];
 	if (options.fakeEngine === true) childArguments.push("--fake-engine");
+	if (options.maxBufferedBytes !== undefined) {
+		childArguments.push(
+			"--max-buffered-bytes",
+			String(options.maxBufferedBytes),
+		);
+	}
 	const child = spawn(nodeBinary, childArguments, {
 		stdio: ["ignore", "pipe", "pipe", "ipc"],
 	});
@@ -282,6 +307,38 @@ export async function spawnService(
 				});
 			});
 		},
+		async openUnreadStream(path) {
+			const discovery = await readDiscovery(root);
+			const [hostname = "127.0.0.1", port = "0"] = discovery.host.split(":");
+			const socket = connectSocket({ host: hostname, port: Number(port) });
+			await new Promise<void>((resolve, reject) => {
+				socket.once("connect", () => resolve());
+				socket.once("error", reject);
+			});
+			// Paused before a byte is requested: everything the server writes stays in
+			// the kernel's buffers and then in the server's own write queue.
+			socket.pause();
+			socket.write(
+				[
+					`GET ${path} HTTP/1.1`,
+					`Host: ${discovery.host}`,
+					`Authorization: Bearer ${discovery.token}`,
+					"Accept: text/event-stream",
+					"",
+					"",
+				].join("\r\n"),
+			);
+			return {
+				socket,
+				async drain() {
+					socket.resume();
+					await new Promise<void>((resolve) => {
+						socket.once("close", () => resolve());
+						socket.destroy();
+					});
+				},
+			};
+		},
 		async fake(command) {
 			nextCommandId += 1;
 			const id = nextCommandId;
@@ -366,7 +423,7 @@ export interface FakeServiceHandle {
 	/** Waits for the engine to be running, then completes it with a durable answer. */
 	completeFake(text: string): Promise<void>;
 	/** Waits for the engine to be running, then fails it, keeping partial text. */
-	failFake(partialText?: string): Promise<void>;
+	failFake(partialText?: string, code?: FailedCode): Promise<void>;
 	/** Streams live text from the engine without recording a durable entry. */
 	emitFake(text: string): Promise<void>;
 	/** How many prompts the engine was actually asked to run. */
@@ -377,12 +434,17 @@ export interface FakeServiceHandle {
 }
 
 export async function spawnServiceWithFake(
-	options: { root?: string } = {},
+	options: { root?: string; maxBufferedBytes?: number } = {},
 ): Promise<FakeServiceHandle> {
 	const root =
 		options.root ??
 		(await mkdtemp(join(await realpath(tmpdir()), "brn-service-")));
-	const service = await spawnService(root, { fakeEngine: true });
+	const service = await spawnService(root, {
+		fakeEngine: true,
+		...(options.maxBufferedBytes === undefined
+			? {}
+			: { maxBufferedBytes: options.maxBufferedBytes }),
+	});
 	const clients: Client[] = [await connect(root)];
 
 	const handle: FakeServiceHandle = {
@@ -406,13 +468,13 @@ export async function spawnServiceWithFake(
 			await service.fake({ action: "awaitRunning" });
 			await service.fake({ action: "complete", text });
 		},
-		async failFake(partialText) {
+		async failFake(partialText, code) {
 			await service.fake({ action: "awaitRunning" });
-			await service.fake(
-				partialText === undefined
-					? { action: "fail" }
-					: { action: "fail", text: partialText },
-			);
+			await service.fake({
+				action: "fail",
+				...(partialText === undefined ? {} : { text: partialText }),
+				...(code === undefined ? {} : { code }),
+			});
 		},
 		async emitFake(text) {
 			await service.fake({ action: "awaitRunning" });

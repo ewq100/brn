@@ -56,6 +56,8 @@ export function isPrompt(value: unknown): value is PromptRequest {
 export const HealthSchema = Type.Object(
 	{
 		status: Type.Literal("ok"),
+		/** True whenever the service answers at all: it is not ready before that. */
+		ready: Type.Literal(true),
 		version: Type.Literal(1),
 		instanceId: Type.String({ minLength: 1, maxLength: 128 }),
 		pid: Type.Integer(),

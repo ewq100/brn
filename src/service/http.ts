@@ -126,8 +126,10 @@ const FAILURE_STATUSES: ReadonlyMap<string, number> = new Map([
 	["NO_MODEL", 409],
 	["MODEL_UNAVAILABLE", 409],
 	["OUTPUT_LIMIT", 409],
+	// Absent provider credentials are a precondition the operator must satisfy,
+	// not corrupt or unavailable state.
+	["AUTH_REQUIRED", 409],
 	["INPUT_TOO_LARGE", 413],
-	["AUTH_REQUIRED", 503],
 	["PROVIDER_ERROR", 503],
 	["DEADLINE_EXCEEDED", 503],
 	["SESSION_UNAVAILABLE", 503],
@@ -204,6 +206,12 @@ export interface ServiceView {
 	expected(): { host: string; token: string };
 	/** False while starting up or shutting down. */
 	ready(): boolean;
+	/**
+	 * A constructor-only override of the event stream's queued-byte ceiling, used
+	 * by the test composition entry. Production leaves it undefined, and no
+	 * request, header or environment variable can reach it.
+	 */
+	readonly maxBufferedBytes?: number;
 	readonly domain: ServiceDomain;
 }
 
@@ -396,6 +404,7 @@ async function dispatch(
 			case "/v1/health":
 				sendJson(response, 200, {
 					status: "ok",
+					ready: true,
 					version: 1,
 					instanceId: view.instanceId,
 					pid: view.pid,
@@ -405,7 +414,14 @@ async function dispatch(
 				sendJson(response, 200, hub.snapshot());
 				return;
 			case "/v1/events":
-				attachEventStream(hub, request, response);
+				attachEventStream(
+					hub,
+					request,
+					response,
+					view.maxBufferedBytes === undefined
+						? {}
+						: { maxBufferedBytes: view.maxBufferedBytes },
+				);
 				return;
 			case "/v1/models":
 				sendJson(response, 200, {

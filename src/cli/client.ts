@@ -1,5 +1,6 @@
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
+import { Agent, request as httpRequest, type IncomingMessage } from "node:http";
 import { join } from "node:path";
 import { type Static, type TSchema, Type } from "typebox";
 import { Check } from "typebox/value";
@@ -61,7 +62,11 @@ export interface Client {
 	events(signal?: AbortSignal): Promise<AsyncIterable<Uint8Array>>;
 	/** Re-reads discovery and returns a client for whatever instance is published. */
 	reattach(): Promise<Client>;
-	/** Closes this client's subscriptions. It stops no operation and no service. */
+	/**
+	 * Closes this client's own connections: every stream it opened and every
+	 * pooled socket in the connection pool it owns. It stops no operation and no
+	 * service — the work a severed connection was watching keeps running.
+	 */
 	disconnect(): Promise<void>;
 }
 
@@ -114,14 +119,73 @@ async function readDiscovery(
 export async function connect(stateDir: string): Promise<Client> {
 	const discovery = await readDiscovery(stateDir);
 	const authority = discovery.host;
+	const [hostname = "127.0.0.1", port = "0"] = authority.split(":");
 	/** Every stream this client opened, so `disconnect` can end all of them. */
 	const streams = new Set<AbortController>();
+	/**
+	 * This client's own connection pool.
+	 *
+	 * A pool per client is what makes `disconnect()` mean something: a keep-alive
+	 * socket left over from a completed request belongs to this pool and nobody
+	 * else's, so destroying the pool really closes this client's connections
+	 * instead of returning them to a process-wide pool another client would go on
+	 * using.
+	 */
+	const agent = new Agent({ keepAlive: true });
 
 	function authorized(accept: string): Record<string, string> {
 		return {
 			Authorization: `Bearer ${discovery.token}`,
 			Accept: accept,
 		};
+	}
+
+	/**
+	 * Sends one request over this client's pool and resolves with the response
+	 * head. Nothing follows a redirect: there is no redirect handling here at all,
+	 * so a `3xx` is simply an unexpected status.
+	 */
+	async function send(options: {
+		method: string;
+		path: string;
+		headers: Record<string, string>;
+		body?: string;
+		signal?: AbortSignal;
+	}): Promise<IncomingMessage> {
+		return await new Promise<IncomingMessage>((resolve, reject) => {
+			const outgoing = httpRequest(
+				{
+					agent,
+					host: hostname,
+					port: Number(port),
+					path: options.path,
+					method: options.method,
+					headers: options.headers,
+					...(options.signal === undefined ? {} : { signal: options.signal }),
+				},
+				resolve,
+			);
+			// A failure after the head arrived belongs to the body reader; this
+			// listener exists so a late transport error is never an unhandled event.
+			outgoing.on("error", reject);
+			if (options.body === undefined) outgoing.end();
+			else outgoing.end(options.body, "utf8");
+		});
+	}
+
+	/** Reads a whole response body, decoding strictly. */
+	async function readBody(message: IncomingMessage): Promise<string> {
+		const decoder = new TextDecoder("utf-8", { fatal: true });
+		let text = "";
+		try {
+			for await (const chunk of message) {
+				text += decoder.decode(chunk as Buffer, { stream: true });
+			}
+			text += decoder.decode();
+		} catch {
+			throw new BrnError("INVALID_RESPONSE", "truncated");
+		}
+		return text;
 	}
 
 	/**
@@ -137,31 +201,38 @@ export async function connect(stateDir: string): Promise<Client> {
 		expected: readonly number[],
 	): Promise<Static<S>> {
 		const headers = authorized("application/json");
-		if (body !== undefined)
+		const payload = body === undefined ? undefined : JSON.stringify(body);
+		if (payload !== undefined) {
 			headers["Content-Type"] = "application/json; charset=utf-8";
-		let response: Response;
+			headers["Content-Length"] = String(Buffer.byteLength(payload, "utf8"));
+		}
+		let message: IncomingMessage;
 		try {
-			response = await fetch(`http://${authority}${path}`, {
+			message = await send({
 				method,
+				path,
 				headers,
-				redirect: "error",
-				...(body === undefined ? {} : { body: JSON.stringify(body) }),
+				...(payload === undefined ? {} : { body: payload }),
 			});
 		} catch {
 			throw new BrnError("SERVICE_UNREACHABLE");
 		}
-		if (!expected.includes(response.status)) {
-			throw new BrnError("REQUEST_FAILED", String(response.status));
+		if (!expected.includes(message.statusCode ?? 0)) {
+			// The body is drained rather than the socket destroyed, so a refusal costs
+			// this client's pool nothing.
+			message.resume();
+			throw new BrnError("REQUEST_FAILED", String(message.statusCode ?? 0));
 		}
-		let payload: unknown;
+		const text = await readBody(message);
+		let payloadValue: unknown;
 		try {
-			payload = await response.json();
+			payloadValue = JSON.parse(text);
 		} catch {
 			throw new BrnError("INVALID_RESPONSE", "not_json");
 		}
-		if (!Check(schema, payload))
+		if (!Check(schema, payloadValue))
 			throw new BrnError("INVALID_RESPONSE", "schema");
-		return payload;
+		return payloadValue;
 	}
 
 	const client: Client = {
@@ -213,24 +284,29 @@ export async function connect(stateDir: string): Promise<Client> {
 			signal?.addEventListener("abort", () => controller.abort(), {
 				once: true,
 			});
-			let response: Response;
+			let message: IncomingMessage;
 			try {
-				response = await fetch(`http://${authority}/v1/events`, {
+				message = await send({
+					method: "GET",
+					path: "/v1/events",
 					headers: authorized("text/event-stream"),
-					redirect: "error",
 					signal: controller.signal,
 				});
 			} catch {
 				streams.delete(controller);
 				throw new BrnError("SERVICE_UNREACHABLE");
 			}
-			const body = response.body;
-			if (response.status !== 200 || body === null) {
+			// A stream that is aborted or whose socket is destroyed raises here as
+			// well as at the reader; the reader reports it, and this keeps an
+			// unattended stream from raising an unhandled event.
+			message.on("error", () => undefined);
+			if (message.statusCode !== 200) {
+				message.resume();
 				controller.abort();
 				streams.delete(controller);
-				throw new BrnError("REQUEST_FAILED", String(response.status));
+				throw new BrnError("REQUEST_FAILED", String(message.statusCode ?? 0));
 			}
-			return readChunks(body, () => {
+			return readChunks(message, () => {
 				streams.delete(controller);
 			});
 		},
@@ -242,25 +318,24 @@ export async function connect(stateDir: string): Promise<Client> {
 		async disconnect(): Promise<void> {
 			for (const controller of streams) controller.abort();
 			streams.clear();
+			// Every socket this client used — a stream still being read and an idle
+			// keep-alive socket a finished request left behind — lives in this pool,
+			// so this is what actually severs this client's connections.
+			agent.destroy();
 		},
 	};
 	return client;
 }
 
-/** Yields a response body's bytes and always releases the reader. */
+/** Yields a response body's bytes and always releases the connection. */
 async function* readChunks(
-	body: ReadableStream<Uint8Array>,
+	message: IncomingMessage,
 	done: () => void,
 ): AsyncGenerator<Uint8Array> {
-	const reader = body.getReader();
 	try {
-		for (;;) {
-			const next = await reader.read();
-			if (next.done) return;
-			if (next.value !== undefined) yield next.value;
-		}
+		for await (const chunk of message) yield chunk as Uint8Array;
 	} finally {
-		reader.releaseLock();
+		message.destroy();
 		done();
 	}
 }

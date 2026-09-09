@@ -145,11 +145,23 @@ export function createSnapshotHub(options: SnapshotHubOptions): SnapshotHub {
  * `Last-Event-ID` is ignored. There is nothing to replay, and every reconnect
  * starts from a fresh snapshot instead.
  */
+export interface EventStreamOptions {
+	/**
+	 * The queued-byte ceiling for this connection. Production always uses
+	 * `MAX_BUFFERED_BYTES`; the only caller that passes anything else is the
+	 * test-only composition entry, which is a constructor argument and not
+	 * reachable from a request, a header or the environment.
+	 */
+	readonly maxBufferedBytes?: number;
+}
+
 export function attachEventStream(
 	hub: SnapshotHub,
 	_request: IncomingMessage,
 	response: ServerResponse,
+	options: EventStreamOptions = {},
 ): void {
+	const ceiling = options.maxBufferedBytes ?? MAX_BUFFERED_BYTES;
 	response.writeHead(200, {
 		"Content-Type": "text/event-stream; charset=utf-8",
 		"Cache-Control": "no-store",
@@ -178,7 +190,7 @@ export function attachEventStream(
 		// Model text is data inside a JSON document, never interpolated into the
 		// frame: a newline in an answer cannot end a frame.
 		response.write(`data: ${JSON.stringify(event)}\n\n`);
-		if (response.writableLength > MAX_BUFFERED_BYTES) {
+		if (response.writableLength > ceiling) {
 			// This connection cannot keep up. It loses its stream; the operation it was
 			// watching is untouched and keeps running.
 			logInfo("events.reader_too_slow", { buffered: response.writableLength });
