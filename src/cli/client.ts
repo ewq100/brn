@@ -5,16 +5,56 @@ import { join } from "node:path";
 import { type Static, type TSchema, Type } from "typebox";
 import { Check } from "typebox/value";
 import type { Operation, PromptCommand } from "../core/conversation.ts";
-import { BrnError } from "../core/errors.ts";
+import { BrnError, isBrnError } from "../core/errors.ts";
 import { errnoOf, MANAGED_FILE_MODE } from "../core/fs.ts";
 import type { ResultResponse } from "../protocol/contracts.ts";
 import {
+	ErrorResponseSchema,
 	HealthSchema,
 	OperationSchema,
 	ResultResponseSchema,
 } from "../protocol/contracts.ts";
 
 const DISCOVERY_FILE = "discovery.json";
+
+/**
+ * How long a client waits for activity on an ordinary request.
+ *
+ * This client speaks `node:http` over a pool it owns, which is what makes
+ * `disconnect()` mean something — but it also means no runtime supplies an
+ * implicit deadline, so a service that accepts a connection and then answers
+ * nothing would hang a command for ever. Every JSON route answers promptly by
+ * construction: a submission returns as soon as the operation is *accepted*, and
+ * a route needing the control seat is refused as busy rather than queued. The
+ * long wait belongs to the event stream, which is deliberately exempt.
+ */
+export const REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * The bound for the one route that answers only after an operation settles.
+ *
+ * Cancellation waits for the engine, which the service allows up to its 120 s
+ * cancellation deadline, so this is that deadline plus room for the settlement
+ * itself. It is chosen to be impossible to hit while a legitimate cancellation is
+ * still in progress.
+ */
+export const CANCEL_TIMEOUT_MS = 180_000;
+
+/** Per-request overrides. Only the bound and the accepted statuses are adjustable. */
+export interface RequestOptions {
+	readonly timeoutMs?: number;
+	/**
+	 * The statuses this route answers with on success. It defaults to `200`;
+	 * creating a session answers `201`, which is a success and not a surprise.
+	 */
+	readonly accept?: readonly number[];
+}
+
+/** Construction-time client settings. Production passes none. */
+export interface ClientOptions {
+	/** Replaces {@link REQUEST_TIMEOUT_MS} for every ordinary request. */
+	readonly requestTimeoutMs?: number;
+}
 
 /**
  * A published instance description. `host` is pinned to the loopback interface by
@@ -53,6 +93,7 @@ export interface Client {
 		path: string,
 		schema: S,
 		body?: unknown,
+		options?: RequestOptions,
 	): Promise<Static<S>>;
 	/** Submits one prompt. `200` identifies an exact duplicate, `202` new work. */
 	submit(command: PromptCommand): Promise<Operation>;
@@ -116,8 +157,12 @@ async function readDiscovery(
 }
 
 /** Attaches to the service already running in `stateDir`. */
-export async function connect(stateDir: string): Promise<Client> {
+export async function connect(
+	stateDir: string,
+	options: ClientOptions = {},
+): Promise<Client> {
 	const discovery = await readDiscovery(stateDir);
+	const requestTimeoutMs = options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
 	const authority = discovery.host;
 	const [hostname = "127.0.0.1", port = "0"] = authority.split(":");
 	/** Every stream this client opened, so `disconnect` can end all of them. */
@@ -144,6 +189,10 @@ export async function connect(stateDir: string): Promise<Client> {
 	 * Sends one request over this client's pool and resolves with the response
 	 * head. Nothing follows a redirect: there is no redirect handling here at all,
 	 * so a `3xx` is simply an unexpected status.
+	 *
+	 * `timeoutMs`, when given, bounds inactivity on the connection for the whole
+	 * exchange. The event stream passes nothing, because a stream that is quiet
+	 * while a model thinks is working exactly as intended.
 	 */
 	async function send(options: {
 		method: string;
@@ -151,6 +200,7 @@ export async function connect(stateDir: string): Promise<Client> {
 		headers: Record<string, string>;
 		body?: string;
 		signal?: AbortSignal;
+		timeoutMs?: number;
 	}): Promise<IncomingMessage> {
 		return await new Promise<IncomingMessage>((resolve, reject) => {
 			const outgoing = httpRequest(
@@ -165,6 +215,14 @@ export async function connect(stateDir: string): Promise<Client> {
 				},
 				resolve,
 			);
+			if (options.timeoutMs !== undefined) {
+				// An idle connection is abandoned rather than waited on for ever. The
+				// socket is destroyed, so it leaves this client's pool instead of being
+				// reused in an unknown state.
+				outgoing.setTimeout(options.timeoutMs, () => {
+					outgoing.destroy(new BrnError("SERVICE_UNREACHABLE", "timeout"));
+				});
+			}
 			// A failure after the head arrived belongs to the body reader; this
 			// listener exists so a late transport error is never an unhandled event.
 			outgoing.on("error", reject);
@@ -189,6 +247,23 @@ export async function connect(stateDir: string): Promise<Client> {
 	}
 
 	/**
+	 * Reads the fixed failure code from a refusal body, or nothing when the body is
+	 * not the error contract. It never returns the body's message text.
+	 */
+	async function readFailureCode(
+		message: IncomingMessage,
+	): Promise<string | null> {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(await readBody(message));
+		} catch {
+			return null;
+		}
+		if (!Check(ErrorResponseSchema, parsed)) return null;
+		return parsed.error.code;
+	}
+
+	/**
 	 * One authenticated request, accepted only with an expected status and only
 	 * after the body validates. `expected` is explicit because a duplicate
 	 * submission answers `200` where new work answers `202`.
@@ -199,6 +274,7 @@ export async function connect(stateDir: string): Promise<Client> {
 		schema: S,
 		body: unknown,
 		expected: readonly number[],
+		timeoutMs: number = requestTimeoutMs,
 	): Promise<Static<S>> {
 		const headers = authorized("application/json");
 		const payload = body === undefined ? undefined : JSON.stringify(body);
@@ -212,16 +288,27 @@ export async function connect(stateDir: string): Promise<Client> {
 				method,
 				path,
 				headers,
+				timeoutMs,
 				...(payload === undefined ? {} : { body: payload }),
 			});
-		} catch {
+		} catch (error) {
+			// A bounded wait that expired already names itself; anything else is an
+			// address that refused or dropped the connection.
+			if (isBrnError(error)) throw error;
 			throw new BrnError("SERVICE_UNREACHABLE");
 		}
 		if (!expected.includes(message.statusCode ?? 0)) {
-			// The body is drained rather than the socket destroyed, so a refusal costs
-			// this client's pool nothing.
-			message.resume();
-			throw new BrnError("REQUEST_FAILED", String(message.statusCode ?? 0));
+			// The failure body is fixed text chosen in BRN's own source, so the code it
+			// names is safe to carry into this client's own failure. The status comes
+			// first, so a caller can always read the status whether or not a code
+			// arrived; the body is read rather than the socket destroyed, so a refusal
+			// costs this client's pool nothing.
+			const code = await readFailureCode(message);
+			const status = String(message.statusCode ?? 0);
+			throw new BrnError(
+				"REQUEST_FAILED",
+				code === null ? status : `${status} ${code}`,
+			);
 		}
 		const text = await readBody(message);
 		let payloadValue: unknown;
@@ -244,8 +331,16 @@ export async function connect(stateDir: string): Promise<Client> {
 			path: string,
 			schema: S,
 			body?: unknown,
+			options?: RequestOptions,
 		): Promise<Static<S>> {
-			return await call(method, path, schema, body, [200]);
+			return await call(
+				method,
+				path,
+				schema,
+				body,
+				options?.accept ?? [200],
+				options?.timeoutMs ?? requestTimeoutMs,
+			);
 		},
 		async submit(command: PromptCommand): Promise<Operation> {
 			// `200` is an exact duplicate of work already admitted and `202` is new
@@ -313,7 +408,7 @@ export async function connect(stateDir: string): Promise<Client> {
 		async reattach(): Promise<Client> {
 			// Discovery is re-read rather than assumed: the published instance may have
 			// changed, and it is validated again before anything connects to it.
-			return await connect(stateDir);
+			return await connect(stateDir, options);
 		},
 		async disconnect(): Promise<void> {
 			for (const controller of streams) controller.abort();

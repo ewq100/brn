@@ -43,14 +43,70 @@ discovery document, and releases ownership last. It never deletes its state.
 npm run brn -- --state-dir "$HOME/.brn/default" status
 ```
 
-`status` reads the discovery document, attaches over authenticated loopback
-HTTP, and prints the running instance. Every request carries the token in an
-`Authorization` header — never in a URL — and the service rejects any request
-with a wrong `Host`, a duplicated `Host` or `Authorization` header, or any
-`Origin` at all. It grants no CORS.
+Every command has the same shape: `npm run brn -- --state-dir /absolute/path
+COMMAND`. The client reads the discovery document, attaches over authenticated
+loopback HTTP, and never starts, adopts, or stops a service. Exiting a command,
+or detaching the interactive client, leaves the service and every accepted
+operation running.
 
-Commands other than `status` are not implemented yet and fail with
-`UNSUPPORTED_COMMAND`.
+| Command | Interactive equivalent | What it does |
+|---|---|---|
+| `status` | `/status` | readiness, active session, current work, context and usage |
+| `models` | `/models` | the models an authenticated provider offers |
+| `sessions` | `/sessions` | the native BRN sessions that exist |
+| `new --model PROVIDER/MODEL` | `/new PROVIDER/MODEL` | create and select a new conversation |
+| `resume SESSION_ID` | `/resume SESSION_ID` | select an existing conversation |
+| `model PROVIDER/MODEL` | `/model PROVIDER/MODEL` | change the model, when idle |
+| `chat` | ordinary text | attach the main-screen client and compose prompts |
+| `prompt --request-id UUID --text TEXT` | ordinary text allocates one UUID | one scriptable submission |
+| `operation OPERATION_ID` | `/operation OPERATION_ID` | an operation's state and its durable answer |
+| `cancel OPERATION_ID --confirm` | Ctrl+C while work is shown | request cancellation and wait for it to settle |
+| — | `/quit`, or Ctrl+C while idle | detach the client only |
+
+A model identifier splits at the **first** slash, so the identifier itself may
+contain further slashes: `openrouter/vendor/model-1` is the `openrouter`
+provider's `vendor/model-1`.
+
+A session must already exist before `chat` or `prompt`. A missing service,
+session or model is reported with the command that would create it — the client
+never creates one implicitly and never falls back to a different model.
+
+Every request carries the token in an `Authorization` header — never in a URL —
+and the service rejects any request with a wrong `Host`, a duplicated `Host` or
+`Authorization` header, or any `Origin` at all. It grants no CORS.
+
+### The interactive client
+
+`chat` renders into the terminal's ordinary scrollback: no alternate screen, no
+panel, and no filesystem completion. Enter submits; the editor's newline binding
+(Shift+Enter, or Ctrl+J) inserts a line, and bracketed paste works as usual.
+
+Typed text is never lost to a refusal. The editor is cleared only once the
+service has acknowledged a submission, so a busy rejection, an oversized prompt
+or a session that changed underneath you leaves your text where it was. If the
+conversation was switched while you were composing, the text is not reinterpreted
+as input to the new session: the client says so and waits for you to decide.
+
+If a submission's outcome is unknown — the connection died with the request in
+flight — the client keeps that exact submission, shows its request ID, and looks
+that ID up before it will send anything new. Only a lookup that proves the
+service never admitted it allows the identical text to be sent again under the
+same ID. A new request ID would be a new paid operation.
+
+Ctrl+C while work is shown requests cancellation of exactly the operation on
+screen and waits for it to settle; it never signals the service process. Ctrl+C
+while idle detaches. `/quit` detaches even while work is running, and says so:
+the operation continues, and `operation OPERATION_ID` reads its answer later.
+
+Capability A registers no tools, so the client shows `Tools: none (Capability
+A)`. Context is reported honestly: when the token count is unknown it says
+`unknown` rather than inventing an estimate, and a completed-but-truncated answer
+is labelled as partial rather than presented as a complete one.
+
+Everything the service sends is sanitized before it reaches the terminal.
+Newlines and tabs survive; every other control character is shown as a visible
+escape, so a model, a provider name or a session identifier cannot address your
+terminal.
 
 ## Development
 

@@ -258,7 +258,9 @@ test("the CLI attaches over authenticated loopback and prints status", async () 
 		expect(status.output).toContain("ok");
 		expect(status.output).not.toContain((await readDiscovery(root)).token);
 
-		const unsupported = await runCli(["--state-dir", root, "chat"]);
+		// `chat` is a real command now, so the loud-failure case uses a name that is
+		// genuinely not a command.
+		const unsupported = await runCli(["--state-dir", root, "teleport"]);
 		expect(unsupported.code).not.toBe(0);
 		expect(unsupported.output).toContain("UNSUPPORTED_COMMAND");
 
