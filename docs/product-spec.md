@@ -163,18 +163,23 @@ The UI should keep agent activity and Inbox state visible without overwhelming t
 
 ### Pi runtime integration
 
+> **Approved revision (2026-09-09, pending governing-issue alignment).** The smaller BRN direction in [brn-plan.md](brn-plan.md) supersedes the shared background-service wording below with an independent foreground BRN service and two focused clients. This section records that approved direction for capability A. It does not amend GitHub issues, which remain a separate authorized step.
+
 Pi is the agent-runtime foundation. It provides chat, authentication, session handling, compaction, and agent tools; the product does not rebuild those facilities.
 
-- A single local Pi runtime service is shared by the CLI and local web app.
-- A session created or resumed in either interface appears in the same session list in both interfaces.
-- The service runs only while the user has the application open. It does not run in the background; Inbox processing and failed-commit retries resume on the next launch.
-- Version one is single-user, single-vault, and local-only. Multi-user sharing and application-level roles are deferred.
-- One default model is provided, with a user option to select a different model. A replacement model continues the same session with its existing history.
-- Pi's built-in compaction is used. The chat prominently displays context-window usage, with visual warning states as it nears capacity. Version one adds no forced handover or new-session flow.
+- One independent foreground BRN service hosts the Pi SDK in-process and is shared by a small terminal conversation client and a browser document client. It is started and stopped explicitly, not run as a background daemon.
+- The service owns the sessions. A session created or resumed through the terminal client is the same native Pi session the service holds; the browser client works on documents rather than general chat.
+- Client disconnection does not stop accepted work. Stopping the service cancels provider work and preserves recoverable BRN state; it does not silently repeat paid work on restart. Inbox processing and failed-commit retries resume on the next launch.
+- One conversation is active and one agent operation runs at a time. A busy runtime rejects new agent work visibly rather than silently queuing it. Each agent run is tracked as a durable BRN operation with its own id and result, separate from the native Pi conversation history.
+- Version one is single-user, single-vault, and local-only. A single-writer lock keeps a second service instance from corrupting state. Multi-user sharing and application-level roles are deferred.
+- One default model is provided, with a user option to select a different model. A replacement model continues the same session with its existing history and must not silently alter an in-flight request.
+- Pi's built-in compaction is used. The terminal client prominently displays context-window usage, with visual warning states as it nears capacity. Version one adds no forced handover or new-session flow.
 
 ### Runtime trust boundary
 
 Pi never receives write access to the human vault. It can read canonical knowledge and create proposals in the agent vault.
+
+Product sessions start with all built-in tools disabled and load only BRN-controlled resources. No ambient extensions, skills, prompts, packages, settings, shell, or filesystem tools reach the model; only typed BRN tools do. Setting a working directory is not filesystem confinement. Pi has no built-in OS sandbox, so this guarantee concerns the capabilities exposed to the model, not isolation from a malicious same-user process. Approval and publication are authenticated human-origin operations, never model-callable tools.
 
 ```text
 Pi proposal in agent vault

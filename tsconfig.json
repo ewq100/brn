@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "lib": ["ES2024", "DOM"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "rewriteRelativeImportExtensions": true,
+    "allowImportingTsExtensions": true,
+    // Amended from false: pi-ai 0.85.1 ships provider .models.d.ts files that
+    // import JSON without a type attribute (TS1543 under NodeNext), and
+    // @google/genai references the uninstalled optional @modelcontextprotocol/sdk
+    // (TS2307). Both live entirely in node_modules. BRN sources remain fully
+    // checked, and still checked against these packages' declared types.
+    "skipLibCheck": true,
+    "types": ["node"],
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts"]
+}
